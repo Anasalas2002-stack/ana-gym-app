@@ -1,31 +1,33 @@
 // ═══════════════════════════════════════════════════════
-// PLAN DE ENTRENAMIENTO COMPLETO — ANA SALAS
-// 26 semanas · Push/Pull/Legs · Énfasis glúteos
+// PLAN "GLOW UP" — ANA SALAS · 12 semanas
+// Prioridad: postura → cintura → glúteos → definición
+// 5 días de fuerza · sesiones ≤ 90 min · sobrecarga por última carga real
 // ═══════════════════════════════════════════════════════
 
-const PLAN_START_DATE = localStorage.getItem('planStartDate') || null;
+const PLAN_VERSION = '2';
+const TOTAL_WEEKS = 12;
+const DELOAD_WEEKS = [7];            // + descarga anticipada si la activas (fatiga/dolor)
+const TEST_WEEK = 12;               // semana de marcas
+const CHECKIN_WEEKS = [1, 5, 9, 12];
 
-// Fase según semana
-function getFase(week) {
-  if (week <= 8) return 1;
-  if (week <= 17) return 2;
-  return 3;
+function getFase(week) { return week <= 4 ? 1 : week <= 8 ? 2 : 3; }
+function isDeload(week) {
+  const extra = parseInt((typeof localStorage !== 'undefined' && localStorage.getItem('extraDeloadWeek')) || '0');
+  return DELOAD_WEEKS.includes(week) || extra === week;
+}
+// Esfuerzo: semana 1 de ajuste; desde la 2, básicos a 1–2 reps del fallo y aislamiento a 0–1
+function rirFor(week, ex) {
+  if (week === 1) return 'RIR 2–3 (semana de ajuste)';
+  if (isDeload(week)) return 'RIR 3 (descarga)';
+  if (ex && ex.iso) return 'RIR 0–1 (casi al fallo)';
+  return 'RIR 1–2';
 }
 
-// Calcular peso sugerido para un ejercicio dado semana y fase
-// progression: { f1: [start, end], f2: [start, end], f3: [start, end] }
-function getSuggestedWeight(progression, week) {
-  const fase = getFase(week);
-  const key = `f${fase}`;
-  if (!progression || !progression[key]) return null;
-  const [start, end] = progression[key];
-  let weeksInFase, weekInFase;
-  if (fase === 1) { weeksInFase = 8; weekInFase = week - 1; }
-  else if (fase === 2) { weeksInFase = 9; weekInFase = week - 9; }
-  else { weeksInFase = 9; weekInFase = week - 18; }
-  const ratio = weeksInFase > 1 ? weekInFase / (weeksInFase - 1) : 0;
-  return Math.round((start + (end - start) * ratio) * 2) / 2;
-}
+const FASES = {
+  1: { name: 'Fase 1 · Base y postura', hipo: { rounds: 3, sec: 10 }, cardio: 15, incline: '8–10%' },
+  2: { name: 'Fase 2 · Construcción',  hipo: { rounds: 4, sec: 15 }, cardio: 20, incline: '10–12%' },
+  3: { name: 'Fase 3 · Definición',    hipo: { rounds: 5, sec: 20 }, cardio: 25, incline: '10–12%' },
+};
 
 // Ajuste por fase del ciclo menstrual
 const CYCLE_ADJUSTMENTS = {
@@ -36,361 +38,251 @@ const CYCLE_ADJUSTMENTS = {
   luteal_late:  { factor: 0.90, label: 'Lútea tardía / SPM', color: '#f06292', tip: 'Baja 10%. Más descanso. Es fisiológico, no debilidad.' },
 };
 
-// Videos de YouTube por ejercicio
-const EXERCISE_VIDEOS = {
-  'hip-thrust':        'ePlOAFPxDI8',
-  'rdl':               'hCDzSR6Tg0I',
-  'curl-femoral':      'ELOCsoDSmrg',
-  'kickback-cable':    'lg5_Y3-mqVk',
-  'buenos-dias':       'YA-h4MspVDM',
-  'sentadilla-smith':  'Yd7Y2nBDr4Y',
-  'prensa-pies-altos': 'IZxyjW7MPJQ',
-  'abductora':         'fGlVQST8Cqc',
-  'extension-cuad':    'YyvSfVjQeL0',
-  'press-banca':       'vthMCtgVtFw',
-  'press-hombro':      'qEwKCR5JCog',
-  'pec-deck':          'KxBtdz74Z3s',
-  'elev-laterales':    'XPPfnSEATH4',
-  'pushdown':          'vB5OHsJ3EME',
-  'press-militar':     'F3QY5vMz_6I',
-  'fondos':            'dX_nXpEijRQ',
-  'jalon':             'CAwf7n6Luuc',
-  'remo-maquina':      'GZbfZ033f74',
-  'remo-mancuerna':    'roCP8-muFSA',
-  'curl-biceps':       'ykJmrZ5v0Oo',
-  'dominadas':         'eGo4IYlbE5g',
-  'face-pull':         'rep-qVOkqgk',
-  'plancha':           'ASdvSqZREc4',
-  'split-squat':       'e8R3L8Bvs_I',
-  'sentadilla-sumo':   'Y7ougNSbHXc',
-  'hack-squat':        'rShXDmGiUks',
-  'pantorrillas':      'JbyjNymZsfQ',
-};
+// ═══════════════════════════════════════════════════════
+// BLOQUES REUTILIZABLES (checklists, sin carga)
+// ═══════════════════════════════════════════════════════
+const WARMUP_LOWER = [
+  { id: 'wl-cardio',  name: 'Cardio suave', dose: '5 min', note: 'Bici o caminadora inclinada suave. Sube la temperatura de rodillas y caderas.' },
+  { id: 'wl-catcamel',name: 'Gato–vaca', dose: '1×10', note: 'Columna y pelvis se mueven. Lento, con la respiración.' },
+  { id: 'wl-wgs',     name: 'Estocada profunda con rotación', dose: '1×5 por lado', note: 'Abre cadera y columna torácica. Talón de atrás firme.' },
+  { id: 'wl-ankle',   name: 'Movilidad de tobillo en pared', dose: '1×10 por lado', note: 'Rodilla hacia la pared sin levantar el talón. Tobillo móvil = rodillas felices.' },
+  { id: 'wl-tke',     name: 'Extensión terminal de rodilla con banda', dose: '2×15', note: 'Activa el vasto medial, que estabiliza la rodilla. Aprieta el cuádriceps 1 s arriba.' },
+  { id: 'wl-lateral', name: 'Caminata lateral con mini-banda', dose: '2×12 pasos por lado', note: 'Activa glúteo medio: evita que la rodilla se meta hacia dentro.' },
+  { id: 'wl-squat',   name: 'Sentadilla al cajón/banco, lenta', dose: '2×10', note: '3 s bajando. Rodillas siguen la línea de los pies.' },
+];
+const WARMUP_UPPER = [
+  { id: 'wu-cardio',  name: 'Cardio suave', dose: '5 min', note: 'Remo en máquina o caminadora inclinada.' },
+  { id: 'wu-catcamel',name: 'Gato–vaca + apertura de libro', dose: '1×8 por lado', note: 'Rotación torácica: abre el pecho y suelta la espalda alta.' },
+  { id: 'wu-slides',  name: 'Deslizamientos en pared (wall slides)', dose: '2×10', note: 'Lumbar, costillas y antebrazos pegados a la pared. Sube sin encoger hombros.' },
+  { id: 'wu-pullapart',name: 'Separaciones de banda (pull-apart)', dose: '2×15', note: 'Junta escápulas hacia atrás y abajo.' },
+  { id: 'wu-er',      name: 'Rotación externa con banda/polea', dose: '2×15 por lado', note: 'Codo pegado a la costilla. Protege el manguito del hombro.' },
+  { id: 'wu-scap',    name: 'Flexiones escapulares', dose: '1×10', note: 'Brazos rectos; solo mueven las escápulas.' },
+];
+const COOLDOWN_LOWER = [
+  { id: 'cl-quad',  name: 'Estiramiento de cuádriceps', dose: '2×30 s por lado', note: 'Rodilla hacia abajo, pelvis neutra (no arquees la espalda).' },
+  { id: 'cl-flexor',name: 'Flexor de cadera en media rodilla', dose: '2×30 s por lado', note: 'Aprieta el glúteo de atrás. Clave para la postura en S.' },
+  { id: 'cl-ham',   name: 'Isquiotibiales', dose: '2×30 s por lado', note: 'Pierna estirada, espalda larga.' },
+  { id: 'cl-glute', name: 'Glúteo en figura 4', dose: '2×30 s por lado', note: 'Acostada. Respira lento.' },
+  { id: 'cl-calf',  name: 'Pantorrillas', dose: '1×30 s por lado', note: 'Talón al piso.' },
+];
+const COOLDOWN_UPPER = [
+  { id: 'cu-pec',   name: 'Pecho en marco de puerta', dose: '2×30 s por lado', note: 'Codo a 90°. Abre el pecho: ayuda a los hombros caídos.' },
+  { id: 'cu-lat',   name: 'Dorsal en postura del niño', dose: '2×30 s', note: 'Brazos largos al frente, caderas atrás.' },
+  { id: 'cu-neck',  name: 'Cuello lateral (trapecio superior)', dose: '2×30 s por lado', note: 'Suave, sin jalar con la mano. Útil si aprietas la mandíbula.' },
+  { id: 'cu-thor',  name: 'Extensión torácica sobre banco/rodillo', dose: '1×8 respiraciones', note: 'Manos tras la nuca, codos juntos. Solo la espalda alta se arquea.' },
+  { id: 'cu-cross', name: 'Hombro cruzado', dose: '1×30 s por lado', note: 'Hombro abajo, lejos de la oreja.' },
+];
+
+// Rutina diaria (se muestra todos los días)
+const DAILY_POSTURA = [
+  { id: 'dp-chin',  name: 'Retracción de mentón (chin tuck)', dose: '2×10 · pausa 5 s', note: 'Mentón hacia atrás como haciendo “doble papada”. Corrige la cabeza hacia adelante. Mirada al frente.' },
+  { id: 'dp-wall',  name: 'Ángeles en la pared', dose: '2×10', note: 'Cabeza, espalda alta y glúteos pegados. Sube y baja brazos sin despegar nada.' },
+  { id: 'dp-pec',   name: 'Pecho en marco de puerta', dose: '2×30 s', note: 'Abre el pecho para recuperar los hombros hacia atrás.' },
+  { id: 'dp-flexor',name: 'Flexor de cadera en media rodilla', dose: '2×30 s por lado', note: 'Glúteo apretado, costillas abajo. Reduce el arco lumbar (“S”) y el abdomen salido.' },
+  { id: 'dp-tilt',  name: 'Báscula pélvica acostada', dose: '2×10 · pausa 5 s', note: 'Aplana la zona lumbar contra el piso exhalando. Enseña a la pelvis a ponerse neutra.' },
+];
+function hipoDose(week) { const h = FASES[getFase(week)].hipo; return `${h.rounds} rondas · apnea ${h.sec} s`; }
+const DAILY_HIPO = [
+  { id: 'dh-pie',   name: 'Hipopresivo de pie (postura base)', dose: w => hipoDose(w), note: 'Pies al ancho de caderas, rodillas suaves, tronco ligeramente inclinado, manos en los muslos. 1) Inhala por nariz. 2) Exhala TODO el aire por la boca. 3) Con los pulmones vacíos, simula inspirar: abre las costillas sin que entre aire. 4) El abdomen se mete y sube hacia las costillas. Sostén y luego inspira suave.' },
+  { id: 'dh-cuad',  name: 'Hipopresivo en cuadrupedia', dose: w => hipoDose(w), note: 'Misma técnica, apoyada en manos y rodillas, espalda neutra. Facilita sentir la succión del abdomen.' },
+  { id: 'dh-vac',   name: 'Vacuum abdominal sentada', dose: w => `${FASES[getFase(w)].hipo.rounds} × ${FASES[getFase(w)].hipo.sec} s`, note: 'Exhala todo, mete el ombligo hacia la columna y sostén. Trabaja el transverso (la “faja natural”) que marca la cintura.' },
+];
+const HIPO_EXPECT = 'Expectativa real: ayudan al control del core y a la sensación de abdomen “metido”, pero la evidencia es limitada y no tensan la piel. La piel mejora sobre todo con la pérdida de grasa gradual, el músculo debajo y el tiempo.';
+const HIPO_SAFETY = 'Mejor en ayunas o 2 h después de comer. Para si te mareas. No los hagas si estás embarazada, con hipertensión no controlada o hernia; ante dudas, consulta a un fisioterapeuta de suelo pélvico.';
+
+// Cardio post-sesión (caminadora con inclinación, sin HIIT)
+function cardioFor(week) {
+  const f = FASES[getFase(week)];
+  const mins = isDeload(week) ? Math.max(10, f.cardio - 5) : f.cardio;
+  return { type: 'Caminadora inclinada', duration: mins, desc: `Inclinación ${f.incline} · 5–5.5 km/h · sin sujetarte de las barras. Ritmo en el que puedas hablar entrecortado.` };
+}
+
+const DOSE_URL = q => 'https://www.youtube.com/results?search_query=' + encodeURIComponent(q);
 
 // ═══════════════════════════════════════════════════════
-// RUTINAS POR DÍA
+// RUTINAS — ejercicios principales (con registro de series)
+// repMin/repMax: doble progresión · inc: salto de carga en kg
 // ═══════════════════════════════════════════════════════
-
 const WORKOUTS = {
-  // Lunes — Glúteos + Pierna Pull
   1: {
-    name: 'Glúteos + Pierna Pull',
-    emoji: '🍑',
-    color: '#c62828',
-    lightColor: '#ffebee',
-    duration: '~65 min',
-    cardio: null,
-    focus: 'Glúteo mayor · Isquiotibiales · RDL',
+    key: 'lowerA', name: 'Glúteos + Isquios', emoji: '🍑', color: '#c62828', lightColor: '#ffebee',
+    duration: '~75 min', cardio: null, warmup: WARMUP_LOWER, cooldown: COOLDOWN_LOWER,
+    focus: 'Hip thrust · RDL · Prensa · Pantorrilla',
+    tip: 'Primer ejercicio: haz 2 series de aproximación (50% y 75% del peso) antes de las efectivas.',
     exercises: [
-      {
-        id: 'hip-thrust-warmup', name: 'Activación: Puente de glúteo',
-        equipment: 'Suelo / colchoneta', videoId: 'hip-thrust',
-        sets: '2', reps: '15', tempo: '2-2-1', rest: '—',
-        isGlute: false, isWarmup: true,
-        progression: null, weightLabel: 'Sin peso',
-        notes: 'Calentamiento obligatorio. 2 seg apretando el glúteo en la cima.',
-      },
-      {
-        id: 'rdl', name: 'Peso muerto rumano (RDL)',
-        equipment: 'Barra olímpica + discos', videoId: 'rdl',
-        sets: '3→4', reps: '12–15', tempo: '3-0-2', rest: '90 seg',
-        isGlute: true,
-        progression: { f1: [20, 30], f2: [35, 50], f3: [55, 70] },
-        notes: 'EL ejercicio. Cadera atrás, espalda recta. Bajar hasta sentir el jalón del isquio.',
-      },
-      {
-        id: 'curl-femoral', name: 'Curl femoral tumbado',
-        equipment: 'Máquina curl femoral tumbado', videoId: 'curl-femoral',
-        sets: '3', reps: '12–15', tempo: '2-0-3', rest: '90 seg',
-        isGlute: true,
-        progression: { f1: [15, 25], f2: [25, 40], f3: [40, 55] },
-        notes: '3 seg bajando = excéntrico intenso. No dejar caer el peso.',
-      },
-      {
-        id: 'kickback-cable', name: 'Kickback en cable con tobillera',
-        equipment: 'Polea baja + tobillera', videoId: 'kickback-cable',
-        sets: '3', reps: '15 c/lado', tempo: '2-2-2', rest: '75 seg',
-        isGlute: true,
-        progression: { f1: [5, 10], f2: [10, 18], f3: [18, 25] },
-        notes: 'Rodilla 90°, empujar talón al techo. 2 seg de pausa en extensión máxima.',
-      },
-      {
-        id: 'buenos-dias', name: 'Buenos días (Good Morning)',
-        equipment: 'Barra en trapecios', videoId: 'buenos-dias',
-        sets: '3', reps: '12–15', tempo: '3-0-2', rest: '90 seg',
-        isGlute: false,
-        progression: { f1: [10, 20], f2: [20, 30], f3: [30, 45] },
-        notes: 'Bisagra de cadera pura. Espalda recta. Sentir el estiramiento del isquio.',
-      },
-      {
-        id: 'curl-femoral-sentado', name: 'Curl femoral sentado',
-        equipment: 'Máquina curl sentado', videoId: 'curl-femoral',
-        sets: '3', reps: '12–15', tempo: '2-0-3', rest: '75 seg',
-        isGlute: false,
-        progression: { f1: [10, 20], f2: [20, 35], f3: [35, 50] },
-        notes: 'Mayor estiramiento del isquio en posición sentada. 3 seg bajando siempre.',
-      },
+      { id: 'hip-thrust', name: 'Hip thrust con barra', equipment: 'Banco + barra/discos o máquina', q: 'hip thrust técnica glúteo',
+        sets: 4, reps: '8–10', repMin: 8, repMax: 10, inc: 5, tempo: '2-1-1', rest: '2 min', isGlute: true,
+        notes: 'Costillas abajo, mentón al pecho, pausa 1 s apretando arriba. Prioridad #1 del plan.' },
+      { id: 'rdl', name: 'Peso muerto rumano', equipment: 'Barra o mancuernas', q: 'peso muerto rumano técnica glúteo',
+        sets: 3, reps: '8–10', repMin: 8, repMax: 10, inc: 2.5, tempo: '3-0-1', rest: '2 min', isGlute: true,
+        notes: 'Cadera atrás, espalda neutra, barra pegada a las piernas. Baja hasta sentir el isquio.' },
+      { id: 'prensa-pies-altos', name: 'Prensa 45° pies altos y abiertos', equipment: 'Prensa de piernas', q: 'prensa pies altos glúteo técnica',
+        sets: 3, reps: '10–12', repMin: 10, repMax: 12, inc: 5, tempo: '3-0-1', rest: '90 seg', isGlute: true,
+        notes: 'Rango sin que la pelvis se despegue. Rodillas alineadas con los pies.',
+        alt: 'Si molesta la rodilla: reduce el rango y baja la carga.' },
+      { id: 'curl-femoral', iso: true, name: 'Curl femoral tumbado', equipment: 'Máquina', q: 'curl femoral tumbado técnica',
+        sets: 3, reps: '10–12', repMin: 10, repMax: 12, inc: 2.5, tempo: '2-0-3', rest: '75 seg', isGlute: false,
+        notes: '3 s bajando. Cadera pegada al banco.' },
+      { id: 'abductora', iso: true, name: 'Abductora sentada inclinada hacia adelante', equipment: 'Máquina abductora', q: 'abductora máquina glúteo medio',
+        sets: 3, reps: '12–15', repMin: 12, repMax: 15, inc: 2.5, tempo: '2-1-2', rest: '60 seg', isGlute: true,
+        notes: 'Inclina el torso hacia adelante para cargar glúteo medio (la curva lateral de la cadera).' },
+      { id: 'n2-pantorrilla-sentada', iso: true, name: 'Elevación de pantorrillas sentada', equipment: 'Máquina de sóleo sentada', q: 'elevación de pantorrillas sentado técnica',
+        sets: 3, reps: '12–15', repMin: 12, repMax: 15, inc: 5, tempo: '1-2-3', rest: '45 seg', isGlute: false,
+        notes: 'Pausa 2 s abajo en estiramiento. Trabaja el sóleo; el jueves trabajas el gemelo de pie.' },
+      { id: 'n2-deadbug', name: 'Dead bug', equipment: 'Colchoneta', q: 'dead bug ejercicio core', bw: true, unit: 'reps',
+        sets: 3, reps: '8–10 por lado', repMin: 8, repMax: 10, inc: 0, tempo: 'lento', rest: '45 seg', isCore: true,
+        notes: 'Lumbar pegada al suelo, exhala al estirar. Activa el transverso.' },
+      { id: 'n2-plancha', name: 'Plancha', equipment: 'Colchoneta', q: 'plancha abdominal técnica', bw: true, unit: 'seg',
+        sets: 3, reps: '30–45 seg', repMin: 30, repMax: 45, inc: 0, tempo: '—', rest: '45 seg', isCore: true,
+        notes: 'Glúteo y abdomen apretados, sin hundir la lumbar. Registra los segundos.' },
     ],
   },
-
-  // Martes — Upper Push
   2: {
-    name: 'Upper Push',
-    emoji: '💪',
-    color: '#1565c0',
-    lightColor: '#e3f2fd',
-    duration: '~55 min + 20 cardio',
-    cardio: { type: 'LISS', duration: 20, desc: 'Caminadora inclinación 7%, 5.5 km/h' },
-    focus: 'Pecho · Hombros · Tríceps',
+    key: 'upperA', name: 'Espalda + Postura', emoji: '🧍‍♀️', color: '#1565c0', lightColor: '#e3f2fd',
+    duration: '~70 min + cardio', cardio: true, warmup: WARMUP_UPPER, cooldown: COOLDOWN_UPPER,
+    focus: 'Jalones · Remos · Hombro posterior',
+    tip: 'Piensa en llevar los codos hacia la cadera y las escápulas abajo y atrás. Esta sesión corrige hombros caídos.',
     exercises: [
-      {
-        id: 'press-maquina', name: 'Press de pecho en máquina',
-        equipment: 'Máquina de pecho', videoId: 'press-banca',
-        sets: '3', reps: '12–15', tempo: '2-1-2', rest: '90 seg',
-        isGlute: false,
-        progression: { f1: [20, 35], f2: [35, 55], f3: [55, 70] },
-        notes: 'Codos a 45° del torso. Bajar hasta sentir el pecho. Empezar en máquina para aprender el patrón.',
-      },
-      {
-        id: 'press-hombro', name: 'Press de hombro en máquina',
-        equipment: 'Máquina de hombro', videoId: 'press-hombro',
-        sets: '3', reps: '12–15', tempo: '2-0-2', rest: '90 seg',
-        isGlute: false,
-        progression: { f1: [10, 20], f2: [20, 35], f3: [35, 50] },
-        notes: 'Espalda apoyada en respaldo. No arquear lumbar. Bajar hasta codos a 90°.',
-      },
-      {
-        id: 'pec-deck', name: 'Apertura de pecho (Pec-deck)',
-        equipment: 'Pec-deck / máquina fly', videoId: 'pec-deck',
-        sets: '3', reps: '12–15', tempo: '3-1-2', rest: '75 seg',
-        isGlute: false,
-        progression: { f1: [15, 25], f2: [25, 40], f3: [40, 55] },
-        notes: 'Codo levemente doblado y fijo. 3 seg bajando sintiendo el pecho.',
-      },
-      {
-        id: 'elev-laterales', name: 'Elevaciones laterales',
-        equipment: 'Mancuernas', videoId: 'elev-laterales',
-        sets: '3', reps: '12–15', tempo: '2-1-3', rest: '75 seg',
-        isGlute: false,
-        progression: { f1: [4, 6], f2: [6, 10], f3: [10, 14] },
-        notes: 'Codo a 10-15° de flexión. Subir solo hasta hombro. 3 seg bajando siempre.',
-      },
-      {
-        id: 'pushdown', name: 'Extensión tríceps en cable',
-        equipment: 'Polea alta + barra recta', videoId: 'pushdown',
-        sets: '3', reps: '12–15', tempo: '2-1-2', rest: '75 seg',
-        isGlute: false,
-        progression: { f1: [10, 18], f2: [18, 28], f3: [28, 38] },
-        notes: 'Codos pegados al cuerpo y fijos. Extensión completa. Bajar lento.',
-      },
+      { id: 'jalon', name: 'Jalón al pecho agarre neutro', equipment: 'Polea alta', q: 'jalón al pecho agarre neutro técnica',
+        sets: 4, reps: '8–12', repMin: 8, repMax: 12, inc: 2.5, tempo: '2-1-2', rest: '2 min', isGlute: false,
+        notes: 'Pecho arriba, escápulas abajo. Sin balanceo.' },
+      { id: 'n2-remo-pecho', name: 'Remo con pecho apoyado', equipment: 'Máquina o T-bar', q: 'remo con pecho apoyado técnica',
+        sets: 3, reps: '10–12', repMin: 10, repMax: 12, inc: 2.5, tempo: '2-1-2', rest: '90 seg', isGlute: false,
+        notes: 'Pausa 1 s apretando la espalda alta.' },
+      { id: 'n2-press-inclinado', name: 'Press inclinado con mancuernas', equipment: 'Banco inclinado 30°', q: 'press inclinado mancuernas técnica',
+        sets: 3, reps: '8–12', repMin: 8, repMax: 12, inc: 2, tempo: '2-0-1', rest: '90 seg', isGlute: false,
+        notes: 'Escápulas retraídas contra el banco. Codos ~45° del torso.',
+        alt: 'Si molesta el hombro: usa agarre neutro o la máquina.' },
+      { id: 'face-pull', iso: true, name: 'Face pull', equipment: 'Polea con cuerda', q: 'face pull técnica hombro posterior',
+        sets: 3, reps: '15', repMin: 12, repMax: 15, inc: 2.5, tempo: '2-1-2', rest: '60 seg', isGlute: false,
+        notes: 'Jala hacia la frente abriendo codos. Pausa 1 s. El mejor ejercicio para la postura de hombros.' },
+      { id: 'n2-pajaros', iso: true, name: 'Pájaros en máquina (deltoide posterior)', equipment: 'Pec deck inverso', q: 'pec deck inverso deltoide posterior',
+        sets: 3, reps: '12–15', repMin: 12, repMax: 15, inc: 2.5, tempo: '2-1-2', rest: '60 seg', isGlute: false,
+        notes: 'Brazos casi rectos; el movimiento sale de los hombros, no de los trapecios.' },
+      { id: 'n2-pallof', name: 'Pallof press', equipment: 'Polea', q: 'pallof press técnica core', unit: 'reps',
+        sets: 3, reps: '10 por lado', repMin: 10, repMax: 12, inc: 2.5, tempo: '2-2-2', rest: '45 seg', isCore: true,
+        notes: 'Anti-rotación: marca la cintura. No dejes que el cable te gire.' },
+      { id: 'n2-lateral-plank', name: 'Plancha lateral', equipment: 'Colchoneta', q: 'plancha lateral técnica', bw: true, unit: 'seg',
+        sets: 3, reps: '20–30 seg por lado', repMin: 20, repMax: 30, inc: 0, tempo: '—', rest: '45 seg', isCore: true,
+        notes: 'Oblicuos + glúteo medio. Caderas arriba y alineadas.' },
     ],
   },
-
-  // Miércoles — Descanso
-  3: null,
-
-  // Jueves — Upper Pull
   4: {
-    name: 'Upper Pull',
-    emoji: '🎯',
-    color: '#2e7d32',
-    lightColor: '#e8f5e9',
-    duration: '~55 min + 20 cardio',
-    cardio: { type: 'LISS', duration: 20, desc: 'Elíptica o caminadora inclinación' },
-    focus: 'Espalda · Bíceps · Core',
+    key: 'lowerB', name: 'Cuádriceps + Glúteos', emoji: '🦵', color: '#6a1b9a', lightColor: '#f3e5f5',
+    duration: '~80 min', cardio: null, warmup: WARMUP_LOWER, cooldown: COOLDOWN_LOWER,
+    focus: 'Sentadilla · Zancada · Glúteo · Pantorrilla',
+    tip: 'Si tus rodillas molestan, mantén el rango cómodo y la técnica lenta. Estar en control importa más que el peso.',
     exercises: [
-      {
-        id: 'jalon', name: 'Jalón al pecho agarre ancho',
-        equipment: 'Polea alta + barra', videoId: 'jalon',
-        sets: '3', reps: '12–15', tempo: '2-1-3', rest: '90 seg',
-        isGlute: false,
-        progression: { f1: [20, 35], f2: [35, 55], f3: [55, 70] },
-        notes: 'Barra al pecho. Codos hacia abajo y atrás. 3 seg subiendo = excéntrico. El dorsal jala, no las manos.',
-      },
-      {
-        id: 'remo-maquina', name: 'Remo en máquina sentado',
-        equipment: 'Máquina remo', videoId: 'remo-maquina',
-        sets: '3', reps: '12–15', tempo: '2-2-2', rest: '90 seg',
-        isGlute: false,
-        progression: { f1: [20, 35], f2: [35, 55], f3: [55, 70] },
-        notes: 'Pecho apoyado. 2 seg sosteniendo. Codos hacia las caderas, no hacia los lados.',
-      },
-      {
-        id: 'remo-mancuerna', name: 'Remo 1 brazo con mancuerna',
-        equipment: 'Banco plano + mancuerna', videoId: 'remo-mancuerna',
-        sets: '3', reps: '12 c/lado', tempo: '2-1-3', rest: '90 seg',
-        isGlute: false,
-        progression: { f1: [8, 14], f2: [14, 22], f3: [22, 30] },
-        notes: 'Rodilla y mano en el banco. Codo al techo. 3 seg bajando = excéntrico intenso.',
-      },
-      {
-        id: 'curl-biceps', name: 'Curl de bíceps con barra EZ',
-        equipment: 'Barra EZ', videoId: 'curl-biceps',
-        sets: '3', reps: '12–15', tempo: '2-0-2', rest: '75 seg',
-        isGlute: false,
-        progression: { f1: [10, 18], f2: [18, 28], f3: [28, 38] },
-        notes: 'Codos pegados al cuerpo y fijos. No balancear el torso. Supinar al subir.',
-      },
-      {
-        id: 'dominadas', name: 'Dominadas asistidas',
-        equipment: 'Máquina asistida', videoId: 'dominadas',
-        sets: '3', reps: '8–10', tempo: '3-0-2', rest: '90 seg',
-        isGlute: false,
-        progression: { f1: [35, 20], f2: [20, 5], f3: [5, 0] },
-        weightLabel: 'Asistencia:',
-        notes: 'Reducir asistencia progresivamente. Meta: dominadas sin asistencia en fase 3.',
-      },
-      {
-        id: 'plancha', name: 'Plancha isométrica',
-        equipment: 'Suelo / colchoneta', videoId: 'plancha',
-        sets: '3', reps: '30–40 seg', tempo: '—', rest: '45 seg',
-        isGlute: false,
-        progression: null, weightLabel: 'Peso corporal',
-        notes: 'Cadera alineada. Core activo. No dejar caer ni subir la cadera.',
-      },
+      { id: 'sentadilla-smith', name: 'Sentadilla en Smith', equipment: 'Máquina Smith', q: 'sentadilla Smith técnica pies adelante',
+        sets: 4, reps: '8–10', repMin: 8, repMax: 10, inc: 5, tempo: '3-0-1', rest: '2 min', isGlute: true,
+        notes: 'Pies un poco adelante de la barra, talones pesados. Baja hasta paralelo.',
+        alt: 'Si molesta la rodilla: sentadilla goblet al cajón.' },
+      { id: 'split-squat', name: 'Zancada búlgara', equipment: 'Mancuernas + banco', q: 'sentadilla búlgara glúteo técnica',
+        sets: 3, reps: '8–10 por lado', repMin: 8, repMax: 10, inc: 2, tempo: '3-0-1', rest: '90 seg', isGlute: true,
+        notes: 'Torso ligeramente inclinado para más glúteo. Peso por todo el pie delantero.',
+        alt: 'Si molesta la rodilla: zancada hacia atrás (reverse lunge).' },
+      { id: 'n2-patada', iso: true, name: 'Patada de glúteo en polea', equipment: 'Polea baja + tobillera', q: 'patada de glúteo polea técnica',
+        sets: 3, reps: '12–15 por lado', repMin: 12, repMax: 15, inc: 2.5, tempo: '2-1-2', rest: '60 seg', isGlute: true,
+        notes: 'No arquees la espalda; mueve solo la cadera. Pausa 1 s arriba.' },
+      { id: 'extension-cuad', iso: true, name: 'Extensión de cuádriceps', equipment: 'Máquina', q: 'extensión de cuádriceps técnica rodilla',
+        sets: 3, reps: '12–15', repMin: 12, repMax: 15, inc: 2.5, tempo: '2-1-3', rest: '60 seg', isGlute: false,
+        notes: 'Sube controlado y baja lento. Usa un rango sin dolor.',
+        alt: 'Si hay dolor en rodilla, sáltalo hoy.' },
+      { id: 'curl-femoral-sentado', iso: true, name: 'Curl femoral sentado', equipment: 'Máquina', q: 'curl femoral sentado técnica',
+        sets: 3, reps: '10–12', repMin: 10, repMax: 12, inc: 2.5, tempo: '2-0-3', rest: '60 seg', isGlute: false,
+        notes: '3 s bajando.' },
+      { id: 'n2-abduccion-polea', iso: true, name: 'Abducción de pie en polea', equipment: 'Polea baja + tobillera', q: 'abducción de cadera en polea de pie glúteo medio',
+        sets: 2, reps: '15 por lado', repMin: 12, repMax: 15, inc: 2.5, tempo: '2-1-2', rest: '45 seg', isGlute: true,
+        notes: 'Torso ligeramente inclinado, pierna hacia afuera y un poco atrás. Glúteo medio: la curva lateral de la cadera.' },
+      { id: 'pantorrillas', iso: true, name: 'Elevación de pantorrillas', equipment: 'Máquina de pie', q: 'elevación de pantorrillas técnica',
+        sets: 3, reps: '12–15', repMin: 12, repMax: 15, inc: 5, tempo: '1-1-3', rest: '45 seg', isGlute: false,
+        notes: 'Rango completo. 3 s bajando.' },
+      { id: 'n2-crunch-inverso', name: 'Crunch inverso', equipment: 'Banco/colchoneta', q: 'crunch inverso técnica abdomen', bw: true, unit: 'reps',
+        sets: 3, reps: '10–15', repMin: 10, repMax: 15, inc: 0, tempo: 'lento', rest: '45 seg', isCore: true,
+        notes: 'Sube la pelvis enrollando, sin balanceo. Abdomen inferior.' },
     ],
   },
-
-  // Viernes — Glúteos + Pierna Push
   5: {
-    name: 'Glúteos + Pierna Push',
-    emoji: '🍑',
-    color: '#c62828',
-    lightColor: '#ffebee',
-    duration: '~65 min',
-    cardio: null,
-    focus: 'Hip Thrust · Sentadilla · Glúteo medio',
+    key: 'upperB', name: 'Hombros + Cintura', emoji: '✨', color: '#00838f', lightColor: '#e0f7fa',
+    duration: '~75 min + cardio', cardio: true, warmup: WARMUP_UPPER, cooldown: COOLDOWN_UPPER,
+    focus: 'Hombros · Espalda · Brazos',
+    tip: 'Hombros redondos y espalda ancha hacen que la cintura se vea más pequeña.',
     exercises: [
-      {
-        id: 'abductora-warmup', name: 'Activación: Abductora de cadera',
-        equipment: 'Máquina abductora', videoId: 'abductora',
-        sets: '2', reps: '20', tempo: '1-1-2', rest: '—',
-        isGlute: false, isWarmup: true,
-        progression: null, weightLabel: '10–15 kg',
-        notes: 'Calentamiento. Activa el glúteo medio antes del trabajo principal.',
-      },
-      {
-        id: 'hip-thrust', name: 'Hip Thrust con barra',
-        equipment: 'Banco + barra olímpica + pad', videoId: 'hip-thrust',
-        sets: '3→4', reps: '12–15', tempo: '2-2-1', rest: '90 seg',
-        isGlute: true, isPrimary: true,
-        progression: { f1: [20, 40], f2: [45, 70], f3: [75, 100] },
-        notes: '⭐ EL EJERCICIO MÁS IMPORTANTE. Espalda alta en banco. Pad en caderas. 2 seg apretando en la cima.',
-      },
-      {
-        id: 'sentadilla-smith', name: 'Sentadilla en Smith Machine',
-        equipment: 'Smith Machine', videoId: 'sentadilla-smith',
-        sets: '3', reps: '12–15', tempo: '3-1-2', rest: '90 seg',
-        isGlute: true,
-        progression: { f1: [20, 35], f2: [40, 55], f3: [60, 80] },
-        notes: 'Pies ligeramente adelantados. Rodillas hacia afuera. Bajar hasta paralelo o más.',
-      },
-      {
-        id: 'prensa-pies-altos', name: 'Prensa pies altos (Leg Press)',
-        equipment: 'Leg Press', videoId: 'prensa-pies-altos',
-        sets: '3', reps: '12–15', tempo: '3-1-2', rest: '90 seg',
-        isGlute: true,
-        progression: { f1: [40, 70], f2: [80, 110], f3: [120, 160] },
-        notes: 'Pies en la parte ALTA de la plataforma = más glúteo. No bloquear rodillas.',
-      },
-      {
-        id: 'abductora', name: 'Máquina abductora sentada',
-        equipment: 'Máquina abductora', videoId: 'abductora',
-        sets: '3', reps: '15–20', tempo: '2-1-3', rest: '75 seg',
-        isGlute: true,
-        progression: { f1: [20, 35], f2: [40, 55], f3: [60, 80] },
-        notes: 'Glúteo medio. 3 seg cerrando lento. Contrae en la apertura máxima.',
-      },
-      {
-        id: 'extension-cuad', name: 'Extensión de cuádriceps',
-        equipment: 'Máquina extensora', videoId: 'extension-cuad',
-        sets: '3', reps: '15', tempo: '2-1-3', rest: '60 seg',
-        isGlute: false,
-        progression: { f1: [15, 25], f2: [25, 40], f3: [40, 55] },
-        notes: 'Pie en flexión dorsal. Contrae el cuádriceps en la cima. 3 seg bajando.',
-      },
+      { id: 'press-hombro', name: 'Press de hombro con mancuernas', equipment: 'Banco con respaldo', q: 'press de hombros con mancuernas técnica',
+        sets: 3, reps: '8–10', repMin: 8, repMax: 10, inc: 2, tempo: '2-0-1', rest: '2 min', isGlute: false,
+        notes: 'Costillas abajo, no arquees la espalda. Codos ligeramente adelante.',
+        alt: 'Si molesta el hombro: press neutro o landmine.' },
+      { id: 'remo-mancuerna', name: 'Remo con mancuerna a una mano', equipment: 'Mancuerna + banco', q: 'remo con mancuerna una mano técnica',
+        sets: 3, reps: '10–12 por lado', repMin: 10, repMax: 12, inc: 2, tempo: '2-1-2', rest: '75 seg', isGlute: false,
+        notes: 'Espalda plana. Lleva el codo a la cadera.' },
+      { id: 'elev-laterales', iso: true, name: 'Elevaciones laterales', equipment: 'Mancuernas o polea', q: 'elevaciones laterales técnica hombro',
+        sets: 4, reps: '12–15', repMin: 12, repMax: 15, inc: 1, tempo: '2-0-2', rest: '45 seg', isGlute: false,
+        notes: 'Codo ligeramente flexionado, sube hasta la altura del hombro. Hombro ancho = cintura marcada.' },
+      { id: 'n2-remo-polea', name: 'Remo en polea baja agarre neutro', equipment: 'Polea baja', q: 'remo polea baja técnica',
+        sets: 3, reps: '10–12', repMin: 10, repMax: 12, inc: 2.5, tempo: '2-1-2', rest: '75 seg', isGlute: false,
+        notes: 'Pecho abierto, sin balancear el torso.' },
+      { id: 'pushdown', iso: true, name: 'Extensión de tríceps en polea', equipment: 'Polea alta', q: 'extensión de tríceps polea técnica',
+        sets: 3, reps: '12–15', repMin: 12, repMax: 15, inc: 2.5, tempo: '2-0-2', rest: '45 seg', isGlute: false,
+        notes: 'Codos pegados al cuerpo.' },
+      { id: 'curl-biceps', iso: true, name: 'Curl de bíceps con mancuernas', equipment: 'Mancuernas', q: 'curl de bíceps mancuernas técnica',
+        sets: 3, reps: '10–12', repMin: 10, repMax: 12, inc: 1, tempo: '2-0-2', rest: '45 seg', isGlute: false,
+        notes: 'Sin balanceo.' },
+      { id: 'n2-crunch-polea', name: 'Crunch en polea (de rodillas)', equipment: 'Polea alta + cuerda', q: 'crunch en polea de rodillas técnica',
+        sets: 3, reps: '12–15', repMin: 12, repMax: 15, inc: 2.5, tempo: '2-1-2', rest: '45 seg', isCore: true,
+        notes: 'Enrolla la columna, no tires con los brazos.' },
+      { id: 'n2-woodchop', name: 'Leñador en polea (woodchop)', equipment: 'Polea', q: 'woodchop polea oblicuos técnica', unit: 'reps',
+        sets: 3, reps: '12 por lado', repMin: 10, repMax: 15, inc: 2.5, tempo: '2-0-2', rest: '45 seg', isCore: true,
+        notes: 'Gira desde el torso, caderas estables. Cintura.' },
     ],
   },
-
-  // Sábado — Pierna Completa
   6: {
-    name: 'Pierna Completa',
-    emoji: '🦵',
-    color: '#4a148c',
-    lightColor: '#f3e5f5',
-    duration: '~65 min + 15 HIIT',
-    cardio: { type: 'HIIT', duration: 15, desc: 'Bicicleta estática: 30 seg sprint + 90 seg recuperación × 8 rondas' },
-    focus: 'Volumen alto · Todos los músculos del tren inferior',
+    key: 'glutePump', name: 'Glúteos Extra (bonus)', emoji: '🔥', color: '#ad1457', lightColor: '#fce4ec', optional: true,
+    duration: '~55 min + cardio', cardio: true, warmup: WARMUP_LOWER, cooldown: COOLDOWN_LOWER,
+    focus: 'Extra de volumen de glúteo',
+    tip: 'Sesión extra: si un sábado no puedes, no pasa nada. Lo esencial (postura, cintura, glúteo pesado) ya lo hiciste de lunes a viernes.',
     exercises: [
-      {
-        id: 'prensa-sabado', name: 'Prensa pies altos',
-        equipment: 'Leg Press', videoId: 'prensa-pies-altos',
-        sets: '3', reps: '12–15', tempo: '3-1-2', rest: '90 seg',
-        isGlute: true,
-        progression: { f1: [40, 70], f2: [80, 110], f3: [120, 160] },
-        notes: 'Pies altos. Glúteo activado en todo el rango. No bloquear rodillas arriba.',
-      },
-      {
-        id: 'split-squat', name: 'Split squat búlgaro',
-        equipment: 'Banco + mancuernas', videoId: 'split-squat',
-        sets: '3', reps: '10 c/lado', tempo: '3-1-2', rest: '90 seg',
-        isGlute: true,
-        progression: { f1: [6, 10], f2: [12, 18], f3: [20, 28] },
-        notes: 'Pie trasero en banco. El ejercicio unilateral más completo para glúteo.',
-      },
-      {
-        id: 'sentadilla-sumo', name: 'Sentadilla sumo con barra',
-        equipment: 'Barra libre o Smith', videoId: 'sentadilla-sumo',
-        sets: '3', reps: '12–15', tempo: '3-1-2', rest: '90 seg',
-        isGlute: true,
-        progression: { f1: [20, 35], f2: [40, 55], f3: [60, 80] },
-        notes: 'Pies muy abiertos, puntas a 45°. Glúteo medio y aductores.',
-      },
-      {
-        id: 'curl-femoral-sabado', name: 'Curl femoral sentado',
-        equipment: 'Máquina curl sentado', videoId: 'curl-femoral',
-        sets: '3', reps: '12–15', tempo: '2-0-3', rest: '75 seg',
-        isGlute: false,
-        progression: { f1: [10, 20], f2: [20, 35], f3: [35, 50] },
-        notes: 'Mayor estiramiento del isquio en posición sentada. 3 seg bajando.',
-      },
-      {
-        id: 'pantorrillas', name: 'Elevación de pantorrillas',
-        equipment: 'Máquina pantorrillas de pie', videoId: 'pantorrillas',
-        sets: '4', reps: '15–20', tempo: '1-1-3', rest: '45 seg',
-        isGlute: false,
-        progression: { f1: [20, 40], f2: [40, 65], f3: [65, 90] },
-        notes: '3 seg bajando. Rango completo. No rebotar el peso en ninguna fase.',
-      },
+      { id: 'n2-hip-thrust-1p', name: 'Hip thrust a una pierna', equipment: 'Banco + mancuerna sobre la cadera', q: 'hip thrust a una pierna técnica',
+        sets: 3, reps: '10–12 por lado', repMin: 10, repMax: 12, inc: 2, tempo: '2-1-1', rest: '75 seg', isGlute: true,
+        notes: 'Empieza sin peso; cuando hagas 12 por lado limpias, pon una mancuerna sobre la cadera. Pausa 1 s arriba.' },
+      { id: 'n2-hiperextension', name: 'Hiperextensión 45° enfocada en glúteo', equipment: 'Banco romano', q: 'hiperextensión 45 glúteo técnica',
+        sets: 3, reps: '12–15', repMin: 12, repMax: 15, inc: 2.5, tempo: '2-1-2', rest: '75 seg', isGlute: true,
+        notes: 'Redondea ligeramente la espalda alta y empuja con el glúteo. Peso opcional contra el pecho.' },
+      { id: 'n2-extension-cadera', iso: true, name: 'Extensión de cadera en máquina', equipment: 'Máquina de patada de glúteo', q: 'máquina patada de glúteo técnica',
+        sets: 3, reps: '12–15 por lado', repMin: 12, repMax: 15, inc: 2.5, tempo: '2-1-2', rest: '60 seg', isGlute: true,
+        notes: 'Pausa 1 s arriba. No hiperextiendas la lumbar.' },
+      { id: 'abductora-sab', iso: true, name: 'Abductora sentada (volumen)', equipment: 'Máquina abductora', q: 'abductora máquina glúteo medio',
+        sets: 3, reps: '15–20', repMin: 15, repMax: 20, inc: 2.5, tempo: '2-1-2', rest: '45 seg', isGlute: true,
+        notes: 'Llega cerca del fallo en la última serie.' },
+      { id: 'n2-birddog', name: 'Bird-dog con pausa', equipment: 'Colchoneta', q: 'bird dog ejercicio técnica', bw: true, unit: 'reps',
+        sets: 3, reps: '8–10 por lado', repMin: 8, repMax: 10, inc: 0, tempo: 'pausa 3 s', rest: '45 seg', isCore: true,
+        notes: 'Pelvis quieta, como si llevaras una taza en la espalda.' },
     ],
   },
-
-  // Domingo — Descanso
   0: null,
+  3: null,
 };
 
-// Días de la semana → workout
-// 0=domingo, 1=lunes, ..., 6=sábado
+// 0=domingo … 6=sábado · 4 días esenciales (Lun, Mar, Jue, Vie) + sábado extra (opcional: lo menos importante va ahí)
 const DAY_WORKOUT_MAP = {
-  0: null,  // domingo — descanso
-  1: WORKOUTS[1],  // lunes — Glúteos + Pierna Pull
-  2: WORKOUTS[5],  // martes — Glúteos + Pierna Push
-  3: WORKOUTS[3],  // miércoles — descanso
-  4: WORKOUTS[6],  // jueves — Pierna Completa (+ HIIT)
-  5: WORKOUTS[2],  // viernes — Upper Push (+ LISS)
-  6: WORKOUTS[4],  // sábado — Upper Pull (+ LISS)
+  0: null,
+  1: WORKOUTS[1],
+  2: WORKOUTS[2],
+  3: null,
+  4: WORKOUTS[4],
+  5: WORKOUTS[5],
+  6: WORKOUTS[6],
 };
 
 // Mensajes motivacionales
 const MOTIVATIONAL_MESSAGES = [
-  "💪 ¡Hoy es día de glúteos! Cada rep te acerca a tu meta. Tú puedes.",
-  "🔥 El cuerpo logra lo que la mente cree. ¡A entrenar!",
-  "🍑 Los glúteos no se construyen en el sofá. ¡Vamos, Ana!",
+  "✨ Tu postura se construye hoy: hombros atrás, cabeza alta.",
+  "🔥 El glow up no es magia: es repetirte cada día. ¡Vamos!",
+  "🍑 Cada hip thrust bien hecho es una inversión en ti.",
   "⚡ Un entrenamiento más. Una versión mejor de ti.",
   "🎯 Disciplina es elegirte a ti misma todos los días.",
-  "💎 El progreso, no la perfección. ¡Hoy entrenas!",
+  "💎 Progreso, no perfección. Hoy sumas una serie más fuerte.",
   "🌟 Tu futura versión te agradecerá que entrenes hoy.",
-  "🔑 Constancia es la clave. ¡Hoy sumas otra sesión!",
-  "🏆 No es sobre motivación, es sobre compromiso. ¡Vamos!",
-  "✨ Cada entrenamiento es un regalo que te haces a ti misma.",
+  "🧘‍♀️ Respira, mete el abdomen, endereza la espalda. Eso ya es entrenar.",
+  "🏆 Más fuerte que la semana pasada: ese es el único rival.",
+  "💫 La cintura se marca con constancia, no con castigo.",
 ];

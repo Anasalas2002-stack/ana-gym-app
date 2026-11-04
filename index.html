@@ -140,6 +140,13 @@ body::before{content:'';position:fixed;inset:0;background:
 #rest-timer strong{font-family:var(--f-display);font-size:19px;font-weight:800;color:var(--coral);min-width:52px;text-align:center}
 #rest-timer button{background:none;border:none;color:var(--text3);font-size:17px;cursor:pointer;padding:2px}
 
+
+/* Checklists */
+.chk{display:flex;gap:11px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--border);cursor:pointer}
+.chk-box{width:22px;height:22px;border-radius:7px;border:1.5px solid var(--border2);flex-shrink:0;display:flex;align-items:center;justify-content:center;margin-top:1px}
+.chk.on .chk-box{background:var(--coral);border-color:var(--coral)}
+.chk.on .chk-box + div{opacity:.55}
+
 /* Check-in */
 .checkin-banner{margin:0 16px 14px;padding:16px;background:linear-gradient(135deg,rgba(232,182,76,.16),rgba(232,182,76,.04));border:1px solid rgba(232,182,76,.35);border-radius:var(--r-lg);display:flex;align-items:center;gap:13px;cursor:pointer}
 .checkin-banner .ci-icon{width:44px;height:44px;border-radius:13px;background:var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:21px;flex-shrink:0}
@@ -237,10 +244,10 @@ input[type=date],input[type=time]{background:var(--bg4);border:1px solid var(--b
 <div id="onboarding">
   <div style="font-size:58px;position:relative">🔥</div>
   <h1>Mi Mejor<br>Versión</h1>
-  <p>26 semanas · Glúteos como prioridad · Registro real de cada serie · Check-in mensual con fotos de progreso</p>
-  <p style="font-size:12.5px;color:var(--text3);margin-bottom:14px;position:relative">¿Cuándo empezaste (o empiezas) el plan?</p>
+  <p>Plan nuevo de 12 semanas · Postura, cintura marcada, glúteos y definición · Sobrecarga según lo último que levantaste · Hipopresivos y estiramientos</p>
+  <p style="font-size:12.5px;color:var(--text3);margin-bottom:14px;position:relative">¿Cuándo empiezas el plan nuevo?</p>
   <input type="date" id="startDateInput" style="margin-bottom:18px;max-width:270px;position:relative">
-  <button class="btn btn-primary btn-full" onclick="finishOnboarding()" style="max-width:300px;position:relative">Comenzar mi transformación</button>
+  <button class="btn btn-primary btn-full" onclick="finishOnboarding()" style="max-width:300px;position:relative">Empezar mi glow up</button>
 </div>
 
 <div id="app">
@@ -249,7 +256,6 @@ input[type=date],input[type=time]{background:var(--bg4);border:1px solid var(--b
     <div class="screen" id="screen-week"></div>
     <div class="screen" id="screen-progress"></div>
     <div class="screen" id="screen-profile"></div>
-    <div class="screen" id="screen-face"></div>
   </div>
   <nav id="tabbar">
     <button class="tab active" onclick="showTab('today',this)">
@@ -264,16 +270,14 @@ input[type=date],input[type=time]{background:var(--bg4);border:1px solid var(--b
     <button class="tab" onclick="showTab('profile',this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/></svg>
       <span>Perfil</span></button>
-    <button class="tab" onclick="showTab('face',this)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="8"/><path d="M9 10h.01M15 10h.01M9 15c.7.7 1.8 1 3 1s2.3-.3 3-1"/></svg>
-      <span>Yoga Facial</span></button>
   </nav>
 </div>
 
 <!-- Rest timer -->
 <div id="rest-timer">
   <span style="font-size:13px;color:var(--text2);font-weight:600">Descanso</span>
-  <strong id="rest-time">1:30</strong>
+  <strong id="rest-time">2:00</strong>
+  <button onclick="addRest(30)" style="font-size:12px;font-weight:700;color:var(--text2);border:1px solid var(--border2);border-radius:100px;padding:3px 9px">+30s</button>
   <button onclick="skipRest()">✕</button>
 </div>
 
@@ -325,7 +329,6 @@ input[type=date],input[type=time]{background:var(--bg4);border:1px solid var(--b
 
 <div id="toast"></div>
 <script src="plan-data.js"></script>
-<script src="face-data.js"></script>
 <script src="photos.js"></script>
 <script src="app.js"></script>
 <script src="bot.js"></script>

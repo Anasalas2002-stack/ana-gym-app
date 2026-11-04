@@ -17,6 +17,11 @@ const STATE = {
   setLogs: JSON.parse(localStorage.getItem('setLogs') || '{}'),       // real per-set logging
   checkins: JSON.parse(localStorage.getItem('checkins') || '[]'),     // monthly check-ins
   openCards: {},
+  checks: JSON.parse(localStorage.getItem('checks') || '{}'),          // checklists (calentamiento, postura...)
+  sessions: JSON.parse(localStorage.getItem('sessions') || '{}'),      // { fecha: {start,end} }
+  dayFactor: JSON.parse(localStorage.getItem('dayFactor') || '{}'),    // ajuste puntual del bot por día
+  restAlarm: localStorage.getItem('restAlarm') !== 'off',
+  units: JSON.parse(localStorage.getItem('units') || '{}'),            // kg | lb por ejercicio/máquina
 };
 
 const RPE_DATA = JSON.parse(localStorage.getItem('rpeHistory') || '{}');
@@ -27,25 +32,101 @@ function today() { const d = new Date(); return `${d.getFullYear()}-${String(d.g
 function todayDow() { return new Date().getDay(); }
 function getDayName(d) { return ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'][d]; }
 function getDayShort(d) { return ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'][d]; }
-function getFaseName(w) { return w <= 8 ? 'Fase 1 · Adaptación' : w <= 17 ? 'Fase 2 · Hipertrofia' : 'Fase 3 · Intensidad'; }
+function getFaseName(w) { return FASES[getFase(w)].name + (isDeload(w) ? ' · Descarga' : ''); }
 function getMonthDay(dateStr) { const d = new Date(dateStr+'T12:00:00'); return `${d.getDate()} ${['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][d.getMonth()]}`; }
 
 function computeWeek() {
   if (!STATE.planStartDate) return 1;
   const start = new Date(STATE.planStartDate + 'T00:00:00');
   const diff = Math.floor((new Date() - start) / 604800000);
-  let w = Math.max(1, Math.min(26, diff + 1));
+  let w = Math.max(1, Math.min(TOTAL_WEEKS, diff + 1));
   if (STATE.travelMode) w = STATE.pausedWeek;
   return w;
 }
 
 function getCycleAdj() { return CYCLE_ADJUSTMENTS[STATE.cyclePhase] || CYCLE_ADJUSTMENTS.follicular; }
 function getWeightKey(exId, week) { return `${exId}_w${week}`; }
-function getWeight(exId, week, progression) {
-  const k = getWeightKey(exId, week);
-  if (STATE.weights[k] !== undefined) return STATE.weights[k];
-  if (!progression) return null;
-  return getSuggestedWeight(progression, week);
+function weekOfDate(dateStr) {
+  if (!STATE.planStartDate) return STATE.currentWeek || 1;
+  const diff = Math.floor((new Date(dateStr + 'T12:00:00') - new Date(STATE.planStartDate + 'T00:00:00')) / 604800000);
+  return Math.max(1, Math.min(TOTAL_WEEKS, diff + 1));
+}
+function roundHalf(x) { return Math.round(x * 2) / 2; }
+const LB = 2.20462;
+// Todo se guarda en kg (canónico); la unidad es solo de visualización/entrada, por ejercicio
+function exUnit(ex, dateStr) {
+  if (STATE.units[ex.id]) return STATE.units[ex.id];
+  return 'kg';
+}
+function toKg(v, unit) { return unit === 'lb' ? Math.round(v / LB * 1000) / 1000 : v; }
+function fmtNum(x) { return Number.isInteger(x) ? String(x) : String(Math.round(x * 10) / 10); }
+// exact=true → muestra lo que realmente levantaste; false → redondea a un salto cómodo de la máquina
+function dispW(kg, unit, exact) {
+  if (kg == null || kg === '') return '';
+  if (unit === 'lb') { const lb = kg * LB; return exact ? Math.round(lb * 2) / 2 : Math.round(lb / 5) * 5; }
+  return exact ? Math.round(kg * 10) / 10 : roundHalf(kg);
+}
+function fmtW(kg, unit, exact) { return fmtNum(dispW(kg, unit, exact)) + ' ' + unit; }
+function getSetCount(ex, week) { return isDeload(week) ? Math.max(2, ex.sets - 1) : ex.sets; }
+
+// Sesiones pasadas con series hechas (más reciente primero)
+function getPastSessions(ex, dateStr) {
+  const out = [];
+  Object.entries(STATE.setLogs).forEach(([key, sets]) => {
+    const [d, id] = key.split('|');
+    if (id !== ex.id || d >= dateStr) return;
+    const done = sets.filter(s => s.done && s.reps > 0 && (ex.bw || s.weight > 0));
+    if (done.length) out.push({ date: d, sets: done });
+  });
+  return out.sort((a, b) => b.date.localeCompare(a.date));
+}
+
+// DOBLE PROGRESIÓN a partir de lo ÚLTIMO que realmente levantaste (no del plan)
+function getSuggestion(ex, dateStr, week) {
+  const U = exUnit(ex, dateStr), F = (x, exact) => fmtW(x, U, exact);
+  const past = getPastSessions(ex, dateStr);
+  if (!past.length) return { weight: null, reps: ex.repMin, first: true, reason: '' };
+  const base = past.find(p => !isDeload(weekOfDate(p.date))) || past[0];
+
+  if (ex.bw) {
+    const minReps = Math.min(...base.sets.map(s => s.reps));
+    const step = ex.unit === 'seg' ? 5 : 1;
+    const target = Math.max(ex.repMin, minReps + step);
+    return { weight: null, reps: isDeload(week) ? ex.repMin : target, first: false,
+      reason: `Última vez: ${minReps} ${ex.unit === 'seg' ? 's' : 'reps'}. Intenta ${isDeload(week) ? ex.repMin : target}.` };
+  }
+
+  const top = Math.max(...base.sets.map(s => s.weight));
+  const atTop = base.sets.filter(s => s.weight === top);
+  const minReps = Math.min(...atTop.map(s => s.reps));
+  let w = top, reps, reason;
+
+  if (atTop.every(s => s.reps >= ex.repMax) && atTop.length >= Math.max(2, ex.sets - 1)) {
+    w = top + ex.inc; reps = ex.repMin;
+    reason = `Completaste ${ex.repMax} reps con ${F(top, true)} → subes a ${F(w)}.`;
+  } else if (minReps < ex.repMin && past.length >= 2 &&
+             Math.max(...past[1].sets.map(s => s.weight)) === top &&
+             Math.min(...past[1].sets.filter(s => s.weight === top).map(s => s.reps)) < ex.repMin) {
+    w = Math.max(0, top - ex.inc); reps = ex.repMin;
+    reason = `Dos sesiones por debajo de ${ex.repMin} reps con ${F(top, true)} → bajas a ${F(w)} para volver a progresar.`;
+  } else {
+    reps = Math.min(ex.repMax, Math.max(ex.repMin, minReps + 1));
+    reason = `Última vez: ${F(top, true)} × ${minReps}. Mismo peso, intenta ${reps} reps.`;
+  }
+
+  // Dificultad percibida de esa sesión (RPE)
+  const rpe = RPE_DATA[base.date]?.rpe;
+  if (rpe && rpe <= 3 && w === top) { w = top + ex.inc; reps = ex.repMin; reason = `Esa sesión te pareció muy fácil → subes a ${F(w)}.`; }
+  if (rpe && rpe >= 10) { w = top * 0.925; reason = `Esa sesión fue al límite → bajas ~7% (${F(w)}).`; }
+
+  if (isDeload(week)) { w = top * 0.9; reps = ex.repMin; reason = `Semana de descarga: 90% de ${F(top, true)} y una serie menos. Recupera tus articulaciones.`; }
+
+  const cyc = Math.min(1, getCycleAdj().factor);
+  const df = STATE.dayFactor[dateStr] || 1;
+  const changed = w !== top || cyc < 1 || df < 1;
+  w = changed ? roundHalf(w * cyc * df) : top;
+  if (cyc < 1 || df < 1) reason += ' (ajustado por tu ciclo/cansancio de hoy)';
+  return { weight: w, reps, first: false, reason, exact: !changed };
 }
 function setWeight(exId, week, val) { STATE.weights[getWeightKey(exId, week)] = val; save('weights', STATE.weights); }
 
@@ -67,6 +148,7 @@ function getStreak() {
     const isWorkoutDay = !!DAY_WORKOUT_MAP[dow];
     if (isWorkoutDay) {
       if (STATE.completedDays[ds]) streak++;
+      else if (DAY_WORKOUT_MAP[dow].optional) { /* el sábado extra no rompe la racha */ }
       else if (ds !== today()) break; // today doesn't break streak yet
     }
     d.setDate(d.getDate() - 1);
@@ -91,13 +173,11 @@ function getSetLogKey(dateStr, exId) { return `${dateStr}|${exId}`; }
 function getSets(dateStr, exId, ex, week) {
   const key = getSetLogKey(dateStr, exId);
   if (STATE.setLogs[key]) return STATE.setLogs[key];
-  // Initialize with suggested values
-  const nSets = parseInt(String(ex.sets).replace(/[^\d]/g, '').charAt(0)) || 3;
-  const adj = getCycleAdj();
-  const raw = ex.progression ? getSuggestedWeight(ex.progression, week) : null;
-  const sugW = raw ? Math.round(raw * adj.factor * 2) / 2 : null;
-  const repsNum = parseInt(String(ex.reps).match(/\d+/)?.[0] || '12');
-  const sets = Array.from({length: nSets}, () => ({ weight: sugW, reps: repsNum, done: false }));
+  const sug = getSuggestion(ex, dateStr, week);
+  const n = getSetCount(ex, week);
+  const U = exUnit(ex, dateStr);
+  const w0 = sug.weight == null ? null : (U === 'lb' && !sug.exact ? toKg(dispW(sug.weight, 'lb', false), 'lb') : sug.weight);
+  const sets = Array.from({ length: n }, () => ex.bw ? { reps: sug.reps, done: false } : { weight: w0, unit: U, reps: sug.reps, done: false });
   STATE.setLogs[key] = sets;
   return sets;
 }
@@ -105,21 +185,56 @@ function getSets(dateStr, exId, ex, week) {
 function updateSet(dateStr, exId, idx, field, val) {
   const key = getSetLogKey(dateStr, exId);
   if (!STATE.setLogs[key]) return;
-  STATE.setLogs[key][idx][field] = parseFloat(val) || 0;
+  const arr = STATE.setLogs[key];
+  const old = arr[idx][field];
+  let v = parseFloat(String(val).replace(',', '.')) || 0;
+  if (field === 'weight') v = toKg(v, arr[idx].unit || 'kg');
+  arr[idx][field] = v;
+  // el peso de la serie 1 se copia a las series siguientes que aún no has hecho
+  if (field === 'weight') {
+    for (let j = idx + 1; j < arr.length; j++) {
+      if (!arr[j].done && (!arr[j].weight || arr[j].weight === old)) { arr[j].weight = v; arr[j].unit = arr[idx].unit || 'kg'; }
+    }
+  }
   save('setLogs', STATE.setLogs);
+  if (field === 'weight') renderToday();
 }
 
+function touchSession(dateStr) {
+  if (!STATE.sessions[dateStr]) STATE.sessions[dateStr] = { start: Date.now() };
+  STATE.sessions[dateStr].last = Date.now();
+  save('sessions', STATE.sessions);
+}
 function toggleSet(dateStr, exId, idx, restSec) {
   const key = getSetLogKey(dateStr, exId);
   if (!STATE.setLogs[key]) return;
   const s = STATE.setLogs[key][idx];
   s.done = !s.done;
+  if (s.done) { s.t = Date.now(); touchSession(dateStr); }
   save('setLogs', STATE.setLogs);
   if (s.done) {
     if (restSec && idx < STATE.setLogs[key].length - 1) startRest(restSec);
-    // haptic-ish feedback
     if (navigator.vibrate) navigator.vibrate(30);
   }
+  renderToday();
+}
+function setUnit(dateStr, exId, unit) {
+  STATE.units[exId] = unit; save('units', STATE.units);
+  const arr = STATE.setLogs[getSetLogKey(dateStr, exId)] || [];
+  arr.forEach(st => {
+    if (!('weight' in st)) return;
+    st.unit = unit;
+    if (!st.done && st.weight) st.weight = unit === 'lb' ? toKg(Math.round(st.weight * LB / 5) * 5, 'lb') : roundHalf(st.weight);
+  });
+  save('setLogs', STATE.setLogs);
+  renderToday();
+}
+function toggleCheck(dateStr, id, inSession) {
+  const k = dateStr + '|' + id;
+  STATE.checks[k] = !STATE.checks[k];
+  if (!STATE.checks[k]) delete STATE.checks[k];
+  else if (inSession) touchSession(dateStr);
+  save('checks', STATE.checks);
   renderToday();
 }
 
@@ -127,41 +242,95 @@ function addSet(dateStr, exId) {
   const key = getSetLogKey(dateStr, exId);
   if (!STATE.setLogs[key]) return;
   const last = STATE.setLogs[key][STATE.setLogs[key].length - 1];
-  STATE.setLogs[key].push({ weight: last?.weight || 0, reps: last?.reps || 12, done: false });
+  const ns = { reps: last?.reps || 10, done: false };
+  if (last && 'weight' in last) { ns.weight = last.weight || 0; ns.unit = last.unit || 'kg'; }
+  STATE.setLogs[key].push(ns);
   save('setLogs', STATE.setLogs);
   renderToday();
 }
 
-// ── Rest timer ───────────────────────────────────────
-let restInterval = null;
+// ── Rest timer (por hora de fin + audio que suena aunque salgas de la app) ──
+const REST = { endAt: 0, iv: null, audio: null, url: null };
+(function restoreRest() { const e = parseInt(localStorage.getItem('restEnd') || '0'); if (e > Date.now()) REST.endAt = e; })();
+
+function makeAlarmWav(totalSec, beepAtSec) {
+  // WAV mono 8 kHz 8-bit: silencio y, al final, 3 pitidos fuertes
+  const sr = 8000, n = Math.floor((beepAtSec + 2.2) * sr);
+  const buf = new ArrayBuffer(44 + n), v = new DataView(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true); v.setUint32(24, sr, true); v.setUint32(28, sr, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+  w(36, 'data'); v.setUint32(40, n, true);
+  const u = new Uint8Array(buf, 44).fill(128);
+  [0, 0.7, 1.4].forEach(off => {
+    const s0 = Math.floor((beepAtSec + off) * sr), len = Math.floor(0.4 * sr);
+    for (let i = 0; i < len && s0 + i < n; i++) u[s0 + i] = 128 + Math.round(Math.sin(2 * Math.PI * 1000 * i / sr) * 120);
+  });
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+function stopRestAudio() {
+  try { if (REST.audio) { REST.audio.pause(); REST.audio = null; } if (REST.url) { URL.revokeObjectURL(REST.url); REST.url = null; } } catch (e) {}
+}
+function playRestAudio(remainingSec) {
+  stopRestAudio();
+  if (!STATE.restAlarm) return;
+  try {
+    if (navigator.audioSession) navigator.audioSession.type = 'playback';
+    REST.url = makeAlarmWav(remainingSec + 2.2, Math.max(0.2, remainingSec));
+    REST.audio = new Audio(REST.url);
+    REST.audio.volume = 1;
+    REST.audio.play().catch(() => {});
+  } catch (e) {}
+}
 function startRest(seconds) {
-  clearInterval(restInterval);
-  let remaining = seconds;
-  const el = document.getElementById('rest-timer');
+  REST.endAt = Date.now() + seconds * 1000;
+  localStorage.setItem('restEnd', String(REST.endAt));
+  document.getElementById('rest-timer').classList.add('show');
+  playRestAudio(seconds);
+  clearInterval(REST.iv);
+  REST.iv = setInterval(restTick, 250);
+  restTick();
+}
+function addRest(sec) {
+  if (!REST.endAt) return;
+  REST.endAt += sec * 1000;
+  localStorage.setItem('restEnd', String(REST.endAt));
+  playRestAudio(Math.max(0.5, (REST.endAt - Date.now()) / 1000));
+  restTick();
+}
+function restTick() {
+  if (!REST.endAt) return;
+  const rem = Math.ceil((REST.endAt - Date.now()) / 1000);
+  if (rem <= 0) return finishRest();
   const timeEl = document.getElementById('rest-time');
-  el.classList.add('show');
-  const tick = () => {
-    const m = Math.floor(remaining / 60), s = remaining % 60;
-    timeEl.textContent = `${m}:${String(s).padStart(2,'0')}`;
-    if (remaining <= 0) {
-      clearInterval(restInterval);
-      el.classList.remove('show');
-      showToast('⏰ ¡Descanso terminado — siguiente serie!');
-      if (navigator.vibrate) navigator.vibrate([100,50,100]);
-    }
-    remaining--;
-  };
-  tick();
-  restInterval = setInterval(tick, 1000);
+  timeEl.textContent = `${Math.floor(rem / 60)}:${String(rem % 60).padStart(2, '0')}`;
+  document.getElementById('rest-timer').classList.add('show');
+}
+function finishRest() {
+  clearInterval(REST.iv);
+  REST.endAt = 0; localStorage.removeItem('restEnd');
+  document.getElementById('rest-timer').classList.remove('show');
+  showToast('⏰ ¡Descanso terminado — siguiente serie!');
+  if (navigator.vibrate) navigator.vibrate([300, 120, 300, 120, 300]);
+  if (document.hidden && 'Notification' in window && Notification.permission === 'granted' && navigator.serviceWorker) {
+    navigator.serviceWorker.ready.then(r => r.showNotification('⏰ Descanso terminado', { body: 'Siguiente serie 💪', tag: 'rest', vibrate: [300, 120, 300, 120, 300] })).catch(() => {});
+  }
+  setTimeout(stopRestAudio, 3000);
 }
 function skipRest() {
-  clearInterval(restInterval);
+  clearInterval(REST.iv);
+  REST.endAt = 0; localStorage.removeItem('restEnd');
+  stopRestAudio();
   document.getElementById('rest-timer').classList.remove('show');
 }
+document.addEventListener('visibilitychange', () => { if (!document.hidden && REST.endAt) restTick(); });
+if (REST.endAt) { REST.iv = setInterval(restTick, 250); setTimeout(restTick, 0); }
 
 function parseRestSeconds(restStr) {
-  const m = String(restStr).match(/(\d+)/);
-  return m ? parseInt(m[1]) : 90;
+  const s = String(restStr);
+  const n = parseFloat((s.match(/[\d.]+/) || [])[0]);
+  if (!n) return 90;
+  return /min/i.test(s) ? Math.round(n * 60) : n;
 }
 
 // ── Tabs ─────────────────────────────────────────────
@@ -171,7 +340,7 @@ function showTab(name, btn) {
   document.getElementById(`screen-${name}`).classList.add('active');
   if (btn) btn.classList.add('active');
   STATE.currentTab = name;
-  ({today: renderToday, week: renderWeek, progress: renderProgress, profile: renderProfile, face: renderFace})[name]();
+  ({today: renderToday, week: renderWeek, progress: renderProgress, profile: renderProfile})[name]();
 }
 
 // ── Daily quote ──────────────────────────────────────
@@ -184,18 +353,90 @@ function getDailyQuote() {
 function isCheckinDue() {
   if (!STATE.planStartDate) return false;
   const week = STATE.currentWeek;
-  const lastCheckin = STATE.checkins[STATE.checkins.length - 1];
-  // Due every 4 weeks: weeks 1, 5, 9, 13, 17, 21, 25
-  const dueWeeks = [1,5,9,13,17,21,25];
-  const currentDue = [...dueWeeks].reverse().find(w => week >= w);
+  const mine = STATE.checkins.filter(c => c.planV === PLAN_VERSION);
+  const last = mine[mine.length - 1];
+  const currentDue = [...CHECKIN_WEEKS].reverse().find(w => week >= w);
   if (!currentDue) return false;
-  if (!lastCheckin) return true;
-  return lastCheckin.week < currentDue;
+  if (!last) return true;
+  return last.week < currentDue;
 }
 
 // ══════════════════════════════════════════════════════
 // SCREEN: HOY
 // ══════════════════════════════════════════════════════
+function isSkipped(ex) {
+  try {
+    const list = JSON.parse(localStorage.getItem('skippedExercises') || '{}')[today()] || [];
+    const n = ex.name.toLowerCase();
+    return list.some(s => { const t = String(s).toLowerCase(); return n.includes(t) || t.includes(n); });
+  } catch (e) { return false; }
+}
+function dose(it, week) { return typeof it.dose === 'function' ? it.dose(week) : it.dose; }
+
+function renderChecklist(items, dateStr, week, inSession) {
+  return items.map(it => {
+    const on = !!STATE.checks[dateStr + '|' + it.id];
+    return `<div class="chk ${on ? 'on' : ''}" onclick="toggleCheck('${dateStr}','${it.id}',${inSession})">
+      <div class="chk-box">${on ? '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3.5"><polyline points="20 6 9 17 4 12"/></svg>' : ''}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13.5px;font-weight:600">${it.name} <span style="font-weight:500;color:var(--coral);font-size:12px">· ${dose(it, week)}</span></div>
+        <div style="font-size:11.5px;color:var(--text2);line-height:1.5;margin-top:2px">${it.note}</div>
+      </div></div>`;
+  }).join('');
+}
+function countChecks(items, dateStr) { return items.filter(it => STATE.checks[dateStr + '|' + it.id]).length; }
+
+function collapsible(id, title, sub, badge, bodyHtml, defaultOpen) {
+  const open = STATE.openCards[id] === undefined ? !!defaultOpen : STATE.openCards[id];
+  return `<div class="card" style="padding:0;overflow:hidden">
+    <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;cursor:pointer" onclick="STATE.openCards['${id}']=${!open};renderToday()">
+      <div style="flex:1"><div style="font-weight:700;font-size:14px">${title}</div><div style="font-size:11.5px;color:var(--text2);margin-top:2px">${sub}</div></div>
+      <span class="pill pill-gray">${badge}</span>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text3);transform:rotate(${open ? 180 : 0}deg);transition:.2s"><polyline points="6 9 12 15 18 9"/></svg>
+    </div>
+    ${open ? `<div style="padding:0 16px 12px">${bodyHtml}</div>` : ''}
+  </div>`;
+}
+
+function dailyBlockHtml(dateStr, week) {
+  const all = [...DAILY_POSTURA, ...DAILY_HIPO];
+  const done = countChecks(all, dateStr);
+  return collapsible('daily', '🧍‍♀️ Rutina diaria · Postura + Hipopresivos', '≈ 12 min · todos los días (mejor por la mañana)', `${done}/${all.length}`,
+    `<div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;font-weight:700;margin:4px 0">Postura</div>
+     ${renderChecklist(DAILY_POSTURA, dateStr, week, false)}
+     <div style="font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;font-weight:700;margin:14px 0 4px">Hipopresivos · ${hipoDose(week)}</div>
+     ${renderChecklist(DAILY_HIPO, dateStr, week, false)}
+     <div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:8px">ℹ️ ${HIPO_EXPECT}</div>
+     <div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:6px">⚠️ ${HIPO_SAFETY}</div>
+     <div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:6px">💡 Pon una alarma cada 1–2 h: nuca, hombros y glúteos contra la pared 20 s. Es el mejor “ejercicio” para la postura.</div>`,
+    false);
+}
+
+function painRuleHtml() {
+  return collapsible('pain', '🩹 Regla de dolor (rodillas y hombros)', 'Cuándo seguir, cambiar o parar', 'Seguridad',
+    `<div style="font-size:12.5px;color:var(--text2);line-height:1.6">
+      <b style="color:var(--text)">Molestia leve (≤3/10)</b> que mejora al calentar → sigue con rango controlado.<br>
+      <b style="color:var(--text)">Dolor punzante o que sube serie a serie</b> → cambia el ejercicio (cada uno trae su alternativa) o salta esa serie.<br>
+      <b style="color:var(--text)">Dolor que dura más de 2 semanas</b> o te despierta de noche → consulta a un fisioterapeuta. Esta app no sustituye una valoración.<br>
+      El calentamiento y el estiramiento de cada sesión son parte del entrenamiento, no son opcionales.<br><br><b style="color:var(--text)">Postura en “S”:</b> si al verte de espalda la columna se curva hacia los lados (no solo de perfil), pide una valoración de fisioterapia antes de cargar pesado.</div>`, false);
+}
+
+function needsEarlyDeload() {
+  const week = STATE.currentWeek;
+  if (isDeload(week) || week <= 2 || week === TEST_WEEK) return false;
+  const lastExtra = parseInt(localStorage.getItem('extraDeloadWeek') || '0');
+  if (lastExtra && week - lastExtra < 3) return false;
+  const r = Object.entries(RPE_DATA).sort((x, y) => y[0].localeCompare(x[0])).slice(0, 3).map(([, v]) => v.rpe);
+  return r.length === 3 && r.filter(n => n >= 9).length >= 2;
+}
+function activateEarlyDeload() {
+  localStorage.setItem('extraDeloadWeek', String(STATE.currentWeek));
+  Object.keys(STATE.setLogs).forEach(k => { if (k.startsWith(today() + '|') && !STATE.setLogs[k].some(s => s.done)) delete STATE.setLogs[k]; });
+  save('setLogs', STATE.setLogs);
+  showToast('Descarga activada para esta semana');
+  renderToday();
+}
+
 function renderToday() {
   const el = document.getElementById('screen-today');
   const dow = todayDow();
@@ -204,64 +445,68 @@ function renderToday() {
   const dateStr = today();
   const streak = getStreak();
   const adj = getCycleAdj();
-  const totalSessions = Object.values(STATE.completedDays).filter(Boolean).length;
+  const deload = isDeload(week);
 
   const checkinBanner = isCheckinDue() ? `
     <div class="checkin-banner" onclick="openCheckin()">
       <div class="ci-icon">📸</div>
       <div style="flex:1">
-        <div style="font-weight:700;font-size:14px;color:var(--gold)">Check-in mensual pendiente</div>
-        <div style="font-size:12px;color:var(--text2);margin-top:2px">Peso, medidas y fotos de progreso — 3 minutos</div>
+        <div style="font-weight:700;font-size:14px;color:var(--gold)">Check-in pendiente</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:2px">Peso, medidas (cintura, glúteo) y fotos — 3 minutos</div>
       </div>
       <div style="color:var(--gold);font-size:18px">→</div>
     </div>` : '';
+  const deloadBanner = deload ? `<div style="margin:0 16px 12px;background:rgba(125,184,232,.12);border:1px solid rgba(125,184,232,.4);border-radius:var(--r-md);padding:12px 15px"><div style="font-size:12.5px;font-weight:700;color:#7db8e8">Semana de descarga</div><div style="font-size:12px;color:var(--text2);margin-top:2px">Pesos al 90% y una serie menos. Tus articulaciones y tu sistema nervioso se recuperan; la próxima semana vuelves más fuerte.</div></div>`
+    : week === TEST_WEEK ? `<div style="margin:0 16px 12px;background:var(--gold-dim);border:1px solid rgba(232,182,76,.4);border-radius:var(--r-md);padding:12px 15px"><div style="font-size:12.5px;font-weight:700;color:var(--gold)">🏆 Semana de marcas</div><div style="font-size:12px;color:var(--text2);margin-top:2px">Última semana del plan: intenta superar tu mejor serie en cada ejercicio, con buena técnica. Haz el check-in final.</div></div>`
+    : needsEarlyDeload() ? `<div style="margin:0 16px 12px;background:rgba(125,184,232,.12);border:1px solid rgba(125,184,232,.4);border-radius:var(--r-md);padding:12px 15px"><div style="font-size:12.5px;font-weight:700;color:#7db8e8">¿Descarga anticipada?</div><div style="font-size:12px;color:var(--text2);margin-top:2px">Tus últimas sesiones fueron muy duras (dificultad 9–10). Si además sientes cansancio o molestias en rodillas u hombros, haz esta semana de descarga.</div><button class="btn btn-secondary btn-sm" style="margin-top:9px" onclick="activateEarlyDeload()">Activar descarga esta semana</button></div>` : '';
 
   if (!workout) {
     el.innerHTML = `
       <div class="hdr"><h1>${getDayName(dow)}</h1><p>Semana ${week} · ${getFaseName(week)}</p></div>
-      ${checkinBanner}
-      <div class="rest-view">
-        <div style="font-size:56px">🌙</div>
+      ${checkinBanner}${deloadBanner}
+      <div class="rest-view" style="padding-bottom:6px">
+        <div style="font-size:50px">🌙</div>
         <div>
-          <div style="font-family:var(--f-display);font-size:21px;font-weight:600">Día de recuperación</div>
-          <p style="color:var(--text2);margin-top:8px;font-size:14px;max-width:280px">El músculo se construye descansando. Hoy tu única tarea es cuidarte.</p>
+          <div style="font-family:var(--f-display);font-size:21px;font-weight:600">Día de recuperación activa</div>
+          <p style="color:var(--text2);margin-top:8px;font-size:14px;max-width:300px">Hoy no hay pesas. Haz tu rutina diaria de postura + hipopresivos${dow === 3 ? ' y una caminata inclinada de 25–30 min' : ' y una caminata suave'}.</p>
         </div>
-        ${dow === 3 ? `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r-md);padding:13px 17px;font-size:13px;color:var(--text2)">🚶 Opcional: caminata suave de 20–30 min</div>` : ''}
-        <div class="quote-card" style="margin:0;width:100%"><div class="quote-text">${getDailyQuote()}</div></div>
-      </div>`;
+      </div>
+      ${dailyBlockHtml(dateStr, week)}
+      ${dow === 3 ? `<div class="card"><div style="font-weight:700;color:var(--gold);margin-bottom:4px">🏃 Caminata inclinada · 25–30 min</div><div style="font-size:13px;color:var(--text2)">Inclinación ${FASES[getFase(week)].incline}, 5–5.5 km/h. Quema grasa sin estrés para tus rodillas.</div></div>` : ''}
+      <div class="quote-card"><div class="quote-text">${getDailyQuote()}</div></div>`;
     return;
   }
 
   const isDone = STATE.completedDays[dateStr];
-
-  // Compute per-exercise completion from set logs
-  const workExercises = workout.exercises.filter(e => !e.isWarmup);
+  const exs = workout.exercises.filter(e => !isSkipped(e));
+  const main = exs.filter(e => !e.isCore), core = exs.filter(e => e.isCore);
   let exDoneCount = 0;
-  workExercises.forEach(ex => {
+  exs.forEach(ex => {
     const sets = STATE.setLogs[getSetLogKey(dateStr, ex.id)];
     if (sets && sets.length && sets.every(s => s.done)) exDoneCount++;
   });
   const todayVol = getTotalVolume(dateStr);
+  const cardio = workout.cardio ? cardioFor(week) : null;
+  const cardioOn = !!STATE.checks[dateStr + '|cardio'];
+  let idx = 0;
 
   el.innerHTML = `
     <div class="hero">
-      <div class="hero-week">Semana ${week} · ${getFaseName(week)}</div>
+      <div class="hero-week">Semana ${week} · ${getFaseName(week)}${workout.optional ? ' · SESIÓN EXTRA' : ''}</div>
       <div class="hero-title">${workout.emoji} ${workout.name}</div>
       <div class="hero-sub">${workout.focus} · ${workout.duration}</div>
     </div>
 
     <div class="streak-row">
-      <div class="streak-chip ${streak >= 3 ? 'fire' : ''}">
-        <strong>${streak >= 3 ? '🔥' : ''}${streak}</strong><small>Racha</small>
-      </div>
-      <div class="streak-chip"><strong>${exDoneCount}/${workExercises.length}</strong><small>Ejercicios</small></div>
+      <div class="streak-chip ${streak >= 3 ? 'fire' : ''}"><strong>${streak >= 3 ? '🔥' : ''}${streak}</strong><small>Racha</small></div>
+      <div class="streak-chip"><strong>${exDoneCount}/${exs.length}</strong><small>Ejercicios</small></div>
       <div class="streak-chip"><strong>${todayVol >= 1000 ? (todayVol/1000).toFixed(1)+'t' : todayVol}</strong><small>Volumen kg</small></div>
       <div class="streak-chip"><strong style="color:${adj.color}">${Math.round(adj.factor*100)}%</strong><small>Ciclo</small></div>
     </div>
 
-    ${checkinBanner}
+    ${checkinBanner}${deloadBanner}
 
-    ${adj.factor !== 1 ? `
+    ${adj.factor < 1 ? `
     <div style="margin:0 16px 12px;background:${adj.color}18;border:1px solid ${adj.color}45;border-radius:var(--r-md);padding:12px 15px">
       <div style="font-size:12px;font-weight:700;color:${adj.color}">${adj.label} · pesos al ${Math.round(adj.factor*100)}%</div>
       <div style="font-size:12px;color:var(--text2);margin-top:2px">${adj.tip}</div>
@@ -271,20 +516,39 @@ function renderToday() {
 
     <div class="quote-card"><div class="quote-text">${getDailyQuote()}</div></div>
 
-    <div class="sect">Tu sesión — registra cada serie</div>
-    ${workout.exercises.map((ex, i) => renderExerciseCard(ex, i, week, dateStr)).join('')}
+    ${dailyBlockHtml(dateStr, week)}
+    ${painRuleHtml()}
 
-    ${workout.cardio ? `
-    <div class="sect">Cardio post-sesión</div>
-    <div class="card" style="background:linear-gradient(135deg,var(--gold-dim),var(--card));border-color:rgba(232,182,76,.3)">
-      <div style="font-weight:700;color:var(--gold);margin-bottom:4px">🏃 ${workout.cardio.type} · ${workout.cardio.duration} min</div>
-      <div style="font-size:13px;color:var(--text2)">${workout.cardio.desc}</div>
+    <div class="sect">1 · Calentamiento (≈10 min)</div>
+    ${collapsible('warm', 'Prepara rodillas, caderas y hombros', workout.tip, `${countChecks(workout.warmup, dateStr)}/${workout.warmup.length}`,
+      renderChecklist(workout.warmup, dateStr, week, true), !isDone)}
+
+    <div class="sect">2 · Fuerza — registra cada serie</div>
+    <div style="margin:0 20px 10px;font-size:12px;color:var(--text2);line-height:1.5">Meta de esfuerzo: básicos ${rirFor(week)} · aislamiento ${rirFor(week, { iso: true })}. La app te propone la carga según <b>lo último que levantaste</b>.</div>
+    ${main.map(ex => renderExerciseCard(ex, idx++, week, dateStr)).join('')}
+
+    <div class="sect">3 · Core y cintura</div>
+    ${core.map(ex => renderExerciseCard(ex, idx++, week, dateStr)).join('')}
+
+    ${cardio ? `
+    <div class="sect">4 · Cardio inclinado (sin HIIT)</div>
+    <div class="card" style="background:linear-gradient(135deg,var(--gold-dim),var(--card));border-color:rgba(232,182,76,.3);cursor:pointer" onclick="toggleCheck('${dateStr}','cardio',true)">
+      <div style="display:flex;gap:12px;align-items:flex-start">
+        <div class="chk-box ${cardioOn ? 'on' : ''}" style="${cardioOn ? 'background:var(--coral);border-color:var(--coral)' : ''}">${cardioOn ? '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3.5"><polyline points="20 6 9 17 4 12"/></svg>' : ''}</div>
+        <div><div style="font-weight:700;color:var(--gold);margin-bottom:4px">🏃 ${cardio.type} · ${cardio.duration} min</div>
+        <div style="font-size:13px;color:var(--text2)">${cardio.desc}</div></div>
+      </div>
     </div>` : ''}
 
-    <div style="padding:10px 16px 6px">
+    <div class="sect">${cardio ? '5' : '4'} · Estiramiento final (≈6 min)</div>
+    ${collapsible('cool', 'Suelta lo que trabajaste', 'Mantén cada estiramiento sin rebotar', `${countChecks(workout.cooldown, dateStr)}/${workout.cooldown.length}`,
+      renderChecklist(workout.cooldown, dateStr, week, true), !isDone)}
+
+    <div style="padding:10px 16px 6px;display:flex;flex-direction:column;gap:8px">
       <button class="btn ${isDone ? 'btn-secondary' : 'btn-primary'} btn-full" onclick="markDayComplete('${dateStr}')">
-        ${isDone ? '✓ Sesión registrada' : '🏁 Terminar y evaluar sesión'}
+        ${isDone ? '✓ Sesión registrada' : '🏁 Terminar y ver resumen'}
       </button>
+      ${isDone ? `<button class="btn btn-ghost btn-full" onclick="openSummary('${dateStr}')">📊 Ver resumen de hoy</button>` : ''}
     </div>
   `;
 }
@@ -294,11 +558,22 @@ function renderExerciseCard(ex, index, week, dateStr) {
   const sets = getSets(dateStr, ex.id, ex, week);
   const allDone = sets.length && sets.every(s => s.done);
   const doneCount = sets.filter(s => s.done).length;
-  const adj = getCycleAdj();
-  const raw = ex.progression ? getSuggestedWeight(ex.progression, week) : null;
-  const sugW = raw ? Math.round(raw * adj.factor * 2) / 2 : null;
+  const sug = getSuggestion(ex, dateStr, week);
   const restSec = parseRestSeconds(ex.rest);
-  const lastWeekBest = getBestSetLastOccurrence(ex.id, dateStr);
+  const nSets = getSetCount(ex, week);
+  const unit = ex.unit === 'seg' ? 'seg' : 'reps';
+  const WU = exUnit(ex, dateStr);
+  const last = getPastSessions(ex, dateStr)[0];
+  const lastTop = last ? (ex.bw ? { reps: Math.max(...last.sets.map(s => s.reps)) } : last.sets.reduce((a, b) => (b.weight > a.weight || (b.weight === a.weight && b.reps > a.reps)) ? b : a)) : null;
+
+  let tag;
+  if (sug.first && !ex.bw) {
+    tag = `<div class="suggested-tag">🆕 Primera vez: elige un peso con el que llegues a ${ex.repMin}–${ex.repMax} reps dejando ${rirFor(week, ex).split(' (')[0]} (repeticiones en reserva). Lo guardamos y desde la próxima sesión te digo cuánto subir.</div>`;
+  } else if (ex.bw) {
+    tag = `<div class="suggested-tag">💡 ${sug.first ? `Meta: ${ex.repMin}–${ex.repMax} ${unit === 'seg' ? 's' : 'reps'}` : sug.reason}</div>`;
+  } else {
+    tag = `<div class="suggested-tag">💡 Hoy: <b>${fmtW(sug.weight, WU, sug.exact)} × ${sug.reps}</b><br><span style="font-size:11.5px;opacity:.85">${sug.reason}</span></div>`;
+  }
 
   return `
   <div class="exc ${ex.isGlute ? 'glute' : ''} ${allDone ? 'done' : ''}">
@@ -308,27 +583,34 @@ function renderExerciseCard(ex, index, week, dateStr) {
         <div class="exc-name">${ex.isGlute ? '🍑 ' : ''}${ex.name}</div>
         <div class="exc-equip">${ex.equipment}</div>
         <div class="exc-meta">
-          <span class="pill pill-gray">${ex.sets}×${ex.reps}</span>
+          <span class="pill pill-gray">${nSets}×${ex.reps}</span>
           ${ex.tempo && ex.tempo !== '—' ? `<span class="pill pill-gray">tempo ${ex.tempo}</span>` : ''}
-          ${ex.rest && ex.rest !== '—' ? `<span class="pill pill-gray">⏱ ${ex.rest}</span>` : ''}
-          ${ex.isWarmup ? '<span class="pill pill-gold">Activación</span>' : ''}
+          <span class="pill pill-gray">⏱ ${ex.rest}</span>
+          <span class="pill pill-gray">${rirFor(week, ex).split(' (')[0]}</span>
+          ${lastTop ? `<span class="pill pill-gold">Antes: ${ex.bw ? lastTop.reps + (unit === 'seg' ? ' s' : '') : fmtW(lastTop.weight, WU, true) + ' × ' + lastTop.reps}</span>` : ''}
           ${doneCount > 0 && !allDone ? `<span class="pill pill-coral">${doneCount}/${sets.length} series</span>` : ''}
         </div>
       </div>
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text3);flex-shrink:0;transform:rotate(${open ? 180 : 0}deg);transition:.2s;margin-top:4px"><polyline points="6 9 12 15 18 9"/></svg>
     </div>
     <div class="exc-body" style="display:${open ? 'block' : 'none'}">
-      ${sugW ? `<div class="suggested-tag">💡 Sugerido para hoy: <b>${sugW} kg</b>${lastWeekBest ? ` · Anterior: ${lastWeekBest.weight} kg × ${lastWeekBest.reps}` : ''}</div>` : ''}
+      ${tag}
       <div class="sets-wrap">
-        <div class="sets-title">Registro de series</div>
+        <div class="sets-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Registro de series</span>
+          ${ex.bw ? '' : `<span style="display:inline-flex;border:1px solid var(--border2);border-radius:100px;overflow:hidden" onclick="event.stopPropagation()">
+            <button style="padding:4px 12px;font-size:11px;font-weight:700;border:none;cursor:pointer;background:${WU === 'kg' ? 'var(--coral)' : 'transparent'};color:${WU === 'kg' ? '#fff' : 'var(--text3)'}" onclick="setUnit('${dateStr}','${ex.id}','kg')">kg</button>
+            <button style="padding:4px 12px;font-size:11px;font-weight:700;border:none;cursor:pointer;background:${WU === 'lb' ? 'var(--coral)' : 'transparent'};color:${WU === 'lb' ? '#fff' : 'var(--text3)'}" onclick="setUnit('${dateStr}','${ex.id}','lb')">lb</button></span>`}
+        </div>
         ${sets.map((s, i) => `
         <div class="set-row ${s.done ? 'logged' : ''}">
           <div class="set-idx">${i + 1}</div>
-          <input class="set-input" type="number" step="0.5" inputmode="decimal" value="${s.weight ?? ''}" placeholder="kg"
+          ${ex.bw ? '' : `<input class="set-input" type="number" step="0.5" inputmode="decimal" value="${s.weight ? dispW(s.weight, s.unit || 'kg', true) : ''}" placeholder="${s.unit || 'kg'}"
             onchange="updateSet('${dateStr}','${ex.id}',${i},'weight',this.value)" onclick="event.stopPropagation()">
-          <span class="set-x">kg ×</span>
-          <input class="set-input" type="number" inputmode="numeric" value="${s.reps ?? ''}" placeholder="reps" style="width:54px"
+          <span class="set-x">${s.unit || 'kg'} ×</span>`}
+          <input class="set-input" type="number" inputmode="numeric" value="${s.reps ?? ''}" placeholder="${unit}" style="width:54px"
             onchange="updateSet('${dateStr}','${ex.id}',${i},'reps',this.value)" onclick="event.stopPropagation()">
+          ${ex.bw ? `<span class="set-x">${unit === 'seg' ? 'seg' : 'reps'}</span><span style="flex:1"></span>` : ''}
           <button class="set-check ${s.done ? 'on' : ''}" onclick="event.stopPropagation();toggleSet('${dateStr}','${ex.id}',${i},${restSec})">
             ${s.done ? '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
           </button>
@@ -336,12 +618,12 @@ function renderExerciseCard(ex, index, week, dateStr) {
         <button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="event.stopPropagation();addSet('${dateStr}','${ex.id}')">+ Añadir serie</button>
       </div>
       <div style="font-size:12px;color:var(--text2);line-height:1.55;padding:12px 0 4px">${ex.notes}</div>
+      ${ex.alt ? `<div style="font-size:12px;color:#e8b64c;line-height:1.5;padding:2px 0 4px">🩹 ${ex.alt}</div>` : ''}
       <div style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">
-        ${EXERCISE_VIDEOS[ex.videoId] ? `
-        <a href="https://www.youtube.com/watch?v=${EXERCISE_VIDEOS[ex.videoId]}" target="_blank" rel="noopener" class="photo-btn" style="color:#ff6b5e;border-color:rgba(255,90,69,.3);text-decoration:none" onclick="event.stopPropagation()">
-          ▶ Video del ejercicio
-        </a>` : ''}
-        ${!ex.isWarmup ? `
+        <a href="${DOSE_URL(ex.q || ex.name + ' técnica')}" target="_blank" rel="noopener" class="photo-btn" style="color:#ff6b5e;border-color:rgba(255,90,69,.3);text-decoration:none" onclick="event.stopPropagation()">
+          ▶ Ver técnica en YouTube
+        </a>
+        ${!ex.isCore ? `
         <button class="photo-btn" onclick="event.stopPropagation();triggerPhotoCapture('${ex.id}',${week})">
           📷 ${getPhoto(ex.id, week) ? 'Cambiar foto' : 'Foto del peso'}
         </button>` : ''}
@@ -377,8 +659,113 @@ function toggleCard(id) {
 function markDayComplete(dateStr) {
   STATE.completedDays[dateStr] = true;
   save('completedDays', STATE.completedDays);
+  const s = STATE.sessions[dateStr] || (STATE.sessions[dateStr] = { start: Date.now() });
+  // el final cuenta hasta tu última acción (+ 3 min de margen) para no inflar el tiempo si terminas tarde
+  s.end = Math.min(Date.now(), (s.last || Date.now()) + 3 * 60000);
+  save('sessions', STATE.sessions);
   renderToday();
-  setTimeout(() => openRpe(dateStr), 500);
+  setTimeout(() => openSummary(dateStr, true), 250);
+}
+
+function buildSummary(dateStr) {
+  const dow = new Date(dateStr + 'T12:00:00').getDay();
+  const workout = DAY_WORKOUT_MAP[dow];
+  if (!workout) return null;
+  const week = weekOfDate(dateStr);
+  let planned = 0, done = 0, vol = 0, prs = 0, ups = 0, same = 0, downs = 0;
+  const rows = [], nextUps = [];
+  workout.exercises.forEach(ex => {
+    planned += getSetCount(ex, week);
+    const sets = (STATE.setLogs[getSetLogKey(dateStr, ex.id)] || []).filter(s => s.done);
+    if (!sets.length) return;
+    done += Math.min(sets.length, getSetCount(ex, week));
+    sets.forEach(s => { if (s.weight && s.reps) vol += s.weight * s.reps; });
+    const best = ex.bw ? { reps: Math.max(...sets.map(s => s.reps)) } : sets.reduce((a, b) => (b.weight > a.weight || (b.weight === a.weight && b.reps > a.reps)) ? b : a);
+    const past = getPastSessions(ex, dateStr);
+    let delta = '', cls = 'pill-gray', pr = false;
+    if (past.length) {
+      const prev = ex.bw ? { reps: Math.max(...past[0].sets.map(s => s.reps)) } : past[0].sets.reduce((a, b) => (b.weight > a.weight || (b.weight === a.weight && b.reps > a.reps)) ? b : a);
+      if (!ex.bw) {
+        const allMax = Math.max(...past.flatMap(p => p.sets.map(s => s.weight)));
+        if (best.weight > allMax) { pr = true; prs++; }
+        if (best.weight > prev.weight) { delta = `+${fmtW(best.weight - prev.weight, exUnit(ex), false)}`; cls = 'pill-sage'; ups++; }
+        else if (best.weight < prev.weight) { delta = `-${fmtW(prev.weight - best.weight, exUnit(ex), false)}`; cls = 'pill-coral'; downs++; }
+        else if (best.reps > prev.reps) { delta = `+${best.reps - prev.reps} rep${best.reps - prev.reps > 1 ? 's' : ''}`; cls = 'pill-sage'; ups++; }
+        else if (best.reps < prev.reps) { delta = `${best.reps - prev.reps} reps`; cls = 'pill-coral'; downs++; }
+        else { delta = '= igual'; same++; }
+      } else {
+        if (best.reps > prev.reps) { delta = `+${best.reps - prev.reps}`; cls = 'pill-sage'; ups++; }
+        else if (best.reps < prev.reps) { delta = `${best.reps - prev.reps}`; cls = 'pill-coral'; downs++; }
+        else { delta = '= igual'; same++; }
+      }
+    }
+    rows.push({ ex, best, delta, cls, pr, n: sets.length });
+    if (!ex.bw && sets.length >= 2 && sets.every(s => s.reps >= ex.repMax) && !isDeload(week))
+      nextUps.push(`${ex.name} → ${fmtW(best.weight + ex.inc, exUnit(ex), false)}`);
+  });
+  const warmDone = countChecks(workout.warmup, dateStr), coolDone = countChecks(workout.cooldown, dateStr);
+  const cardioDone = !!STATE.checks[dateStr + '|cardio'];
+  const sess = STATE.sessions[dateStr] || {};
+  const mins = sess.start && sess.end ? Math.max(1, Math.round((sess.end - sess.start) / 60000)) : null;
+  const completion = planned ? Math.round(done / planned * 100) : 0;
+  const weekStartDow = new Date(dateStr + 'T12:00:00');
+  const sessionsTotal = Object.values(STATE.completedDays).filter(Boolean).length;
+  return { workout, week, rows, planned, done, vol, prs, ups, same, downs, warmDone, coolDone, cardioDone, mins, completion, nextUps, sessionsTotal, rpe: RPE_DATA[dateStr] };
+}
+
+function summaryVerdict(S) {
+  const parts = [];
+  if (S.completion >= 90 && S.ups + S.prs > 0) parts.push(`Vas muy bien 🔥 Completaste el ${S.completion}% de las series y progresaste en ${S.ups} ejercicio${S.ups === 1 ? '' : 's'}${S.prs ? ` (¡${S.prs} récord${S.prs > 1 ? 's' : ''} de peso!)` : ''}.`);
+  else if (S.completion >= 90) parts.push(`Sesión sólida 💪 Completaste el ${S.completion}% de las series. Hoy no subiste carga, y está bien: consolidar también es progresar.`);
+  else if (S.completion >= 60) parts.push(`Buena sesión 👏 Hiciste el ${S.completion}% de las series. Lo que más cambia el cuerpo es repetir esto cada semana.`);
+  else parts.push(`Sesión corta, pero apareciste — y eso es lo que cuenta. Mañana lo retomamos con ganas. ✨`);
+  if (S.downs > 1) parts.push('Bajaste carga en varios ejercicios: revisa sueño, comida y ciclo; no es un retroceso, es información.');
+  if (S.mins) {
+    if (S.mins <= 90) parts.push(`Duración: ${S.mins} min, dentro de tu límite de 1:30 h ✅`);
+    else parts.push(`Duración: ${S.mins} min (te pasaste ${S.mins - 90}). Prueba acortar el descanso de los ejercicios de aislamiento a 45–60 s.`);
+  }
+  if (S.warmDone < S.workout.warmup.length || S.coolDone < S.workout.cooldown.length)
+    parts.push('Te faltó parte del calentamiento o del estiramiento: es lo que protege tus rodillas y hombros. 🩹');
+  return parts;
+}
+
+function openSummary(dateStr, afterFinish) {
+  const S = buildSummary(dateStr);
+  if (!S) return;
+  const modal = document.getElementById('day-modal-content');
+  const fmtKg = v => v >= 1000 ? (v / 1000).toFixed(1) + ' t' : v + ' kg';
+  const verdict = summaryVerdict(S);
+  modal.innerHTML = `
+    <div class="handle"></div>
+    <div style="font-size:10.5px;color:var(--coral);font-weight:700;letter-spacing:1.2px;text-transform:uppercase">Resumen · ${getMonthDay(dateStr)} · Semana ${S.week}</div>
+    <h2 style="margin:4px 0 12px">${S.workout.emoji} ${S.workout.name}</h2>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">
+      <div class="streak-chip"><strong>${S.mins ? S.mins + ' min' : '—'}</strong><small>Duración</small></div>
+      <div class="streak-chip"><strong>${S.done}/${S.planned}</strong><small>Series</small></div>
+      <div class="streak-chip"><strong>${fmtKg(S.vol)}</strong><small>Volumen</small></div>
+    </div>
+    <div style="background:var(--bg3);border-radius:var(--r-md);padding:14px;margin-bottom:14px;font-size:13.5px;line-height:1.6">${verdict.join('<br><br>')}</div>
+
+    <div style="margin:0 0 8px;font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;font-weight:700">Lo que levantaste</div>
+    ${S.rows.length ? S.rows.map(r => `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 0;border-top:1px solid var(--border)">
+        <div style="min-width:0"><div style="font-size:13px;font-weight:600">${r.pr ? '🏆 ' : ''}${r.ex.name}</div>
+        <div style="font-size:11.5px;color:var(--text2)">${r.ex.bw ? r.best.reps + (r.ex.unit === 'seg' ? ' s' : ' reps') : fmtW(r.best.weight, exUnit(r.ex), true) + ' × ' + r.best.reps} · ${r.n} serie${r.n > 1 ? 's' : ''}</div></div>
+        ${r.delta ? `<span class="pill ${r.cls}">${r.delta}</span>` : '<span class="pill pill-gray">1ª vez</span>'}
+      </div>`).join('') : '<div style="font-size:13px;color:var(--text2)">No registraste series hoy.</div>'}
+
+    <div style="margin:14px 0 8px;font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;font-weight:700">Cuidado y recuperación</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <span class="pill ${S.warmDone === S.workout.warmup.length ? 'pill-sage' : 'pill-gold'}">Calentamiento ${S.warmDone}/${S.workout.warmup.length}</span>
+      <span class="pill ${S.coolDone === S.workout.cooldown.length ? 'pill-sage' : 'pill-gold'}">Estiramiento ${S.coolDone}/${S.workout.cooldown.length}</span>
+      ${S.workout.cardio ? `<span class="pill ${S.cardioDone ? 'pill-sage' : 'pill-gold'}">Cardio ${S.cardioDone ? '✓' : 'pendiente'}</span>` : ''}
+      ${S.rpe ? `<span class="pill" style="background:${getRpeConfig(S.rpe.rpe).color}22;color:${getRpeConfig(S.rpe.rpe).color}">Dificultad ${S.rpe.rpe}/10</span>` : ''}
+    </div>
+    ${S.nextUps.length ? `<div style="margin-top:14px;background:var(--gold-dim);border-radius:var(--r-md);padding:12px 14px;font-size:12.5px"><b style="color:var(--gold)">Próxima vez subes:</b><br>${S.nextUps.join('<br>')}</div>` : ''}
+    <div style="font-size:11.5px;color:var(--text3);margin-top:12px">Sesión #${S.sessionsTotal} del plan · Racha ${getStreak()}</div>
+    ${afterFinish && !S.rpe ? `<button class="btn btn-primary btn-full" style="margin-top:14px" onclick="closeDayModal();setTimeout(()=>openRpe('${dateStr}'),200)">¿Qué tan difícil fue? →</button>` : ''}
+    <button class="btn btn-secondary btn-full" style="margin-top:10px" onclick="closeDayModal()">Cerrar</button>`;
+  document.getElementById('day-overlay').style.display = 'flex';
 }
 
 // ══════════════════════════════════════════════════════
@@ -387,11 +774,11 @@ function markDayComplete(dateStr) {
 let pendingRpeDate = null, pendingRpeAdjustment = null;
 
 const RPE_CONFIG = [
-  { range:[1,3], color:'#7db8e8', label:'Muy fácil', feedback:'Fue demasiado suave — tu cuerpo puede más. La próxima sesión de este tipo te exigiré más.', adj:{ f:1.075, msg:'Subo los pesos +7.5% en tu próxima sesión de este tipo.' }},
-  { range:[4,5], color:'#8fc79a', label:'Moderado', feedback:'Buen trabajo — hay margen para crecer. Subimos gradualmente.', adj:{ f:1.05, msg:'Subo los pesos +5%. Progresión sólida.' }},
-  { range:[6,7], color:'#e8b64c', label:'Desafiante', feedback:'¡Perfecto! Este es el rango ideal para hipertrofia. El plan está bien calibrado.', adj:{ f:1.025, msg:'Subo +2.5% — progresión fina, estás en la zona ideal.' }},
-  { range:[8,9], color:'#ff8a65', label:'Muy duro', feedback:'Muy intenso. Está bien de vez en cuando, pero si es frecuente hay que consolidar.', adj:{ f:1.0, msg:'Mantengo los pesos — consolida antes de subir.' }},
-  { range:[10,10], color:'#ff5a45', label:'Al límite', feedback:'Demasiado. El objetivo es rendir sostenidamente, no destruirte. Bajamos un poco.', adj:{ f:0.925, msg:'Bajo los pesos -7.5% para que rindas bien cada sesión.' }},
+  { range:[1,3], color:'#7db8e8', label:'Muy fácil', feedback:'Fue demasiado suave — tu cuerpo puede más.', adj:{ msg:'La próxima vez de este día subo la carga un escalón extra.' }},
+  { range:[4,5], color:'#8fc79a', label:'Moderado', feedback:'Buen trabajo — hay margen para crecer.', adj:{ msg:'Sigues con la doble progresión: subes cuando completes el tope de repeticiones.' }},
+  { range:[6,7], color:'#e8b64c', label:'Desafiante', feedback:'¡Perfecto! Este es el rango ideal para cambiar el cuerpo.', adj:{ msg:'Mantengo la progresión normal — estás en la zona ideal.' }},
+  { range:[8,9], color:'#ff8a65', label:'Muy duro', feedback:'Muy intenso. Está bien de vez en cuando; si es frecuente, consolida.', adj:{ msg:'Sin cambios: consolida antes de subir más.' }},
+  { range:[10,10], color:'#ff5a45', label:'Al límite', feedback:'Demasiado. El objetivo es rendir sostenidamente, no destruirte.', adj:{ msg:'La próxima vez bajo ~7% la carga de este día.' }},
 ];
 function getRpeConfig(n) { return RPE_CONFIG.find(c => n >= c.range[0] && n <= c.range[1]); }
 
@@ -428,20 +815,9 @@ function selectRpe(n) {
 }
 
 function applyRpeAdjustment() {
-  if (!pendingRpeAdjustment || !pendingRpeDate) return closeRpe();
-  const dow = new Date(pendingRpeDate + 'T12:00:00').getDay();
-  const workout = DAY_WORKOUT_MAP[dow];
-  const nextWeek = STATE.currentWeek + 1;
-  if (workout && pendingRpeAdjustment.f !== 1.0) {
-    workout.exercises.forEach(ex => {
-      if (ex.progression) {
-        const base = getSuggestedWeight(ex.progression, nextWeek);
-        if (base) setWeight(ex.id, nextWeek, Math.round(base * pendingRpeAdjustment.f * 2) / 2);
-      }
-    });
-    showToast(`✅ Plan ajustado para la semana ${nextWeek}`);
-  }
   closeRpe();
+  showToast('✅ Guardado — lo uso para ajustar tu próxima sesión');
+  if (STATE.currentTab === 'today') renderToday();
 }
 
 // ══════════════════════════════════════════════════════
@@ -460,8 +836,8 @@ function renderWeek() {
     d.setDate(now.getDate() - tdow + i);
     days.push({ dow: i, dateStr: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`, d });
   }
-  const doneCount = days.filter(x => STATE.completedDays[x.dateStr] && DAY_WORKOUT_MAP[x.dow]).length;
-  const workCount = days.filter(x => DAY_WORKOUT_MAP[x.dow]).length;
+  const doneCount = days.filter(x => STATE.completedDays[x.dateStr] && DAY_WORKOUT_MAP[x.dow] && !DAY_WORKOUT_MAP[x.dow].optional).length;
+  const workCount = days.filter(x => DAY_WORKOUT_MAP[x.dow] && !DAY_WORKOUT_MAP[x.dow].optional).length;
 
   el.innerHTML = `
     <div class="hdr"><h1>Esta semana</h1><p>Semana ${week} · ${getFaseName(week)} · ${doneCount}/${workCount} sesiones</p></div>
@@ -488,8 +864,8 @@ function renderWeek() {
            onclick="openDayModal(${dow},'${dateStr}','${getDayName(dow)} ${d.getDate()}')">
         <div class="wk-dot"><span>${getDayShort(dow)}</span><strong>${d.getDate()}</strong></div>
         <div style="flex:1">
-          <div style="font-weight:600;font-size:14px">${w ? w.emoji + ' ' + w.name : 'Descanso'}</div>
-          <div style="font-size:11.5px;color:var(--text2);margin-top:2px">${w ? w.focus : dow === 3 ? 'Activo opcional' : 'Recuperación'}</div>
+          <div style="font-weight:600;font-size:14px">${w ? w.emoji + ' ' + w.name : 'Descanso'}${w && w.optional ? ' <span class="pill pill-gray" style="margin-left:4px">Extra</span>' : ''}</div>
+          <div style="font-size:11.5px;color:var(--text2);margin-top:2px">${w ? w.focus : dow === 3 ? 'Caminata inclinada + rutina diaria' : 'Descanso + rutina diaria'}</div>
           ${rpe ? `<div style="font-size:11px;color:${getRpeConfig(rpe.rpe).color};margin-top:2px;font-weight:600">Dificultad ${rpe.rpe}/10</div>` : ''}
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px">
@@ -503,9 +879,8 @@ function renderWeek() {
 
 function openDayModal(dow, dateStr, dayLabel) {
   const workout = DAY_WORKOUT_MAP[dow];
-  const week = STATE.currentWeek;
+  const week = weekOfDate(dateStr);
   const modal = document.getElementById('day-modal-content');
-  const adj = getCycleAdj();
   const rpe = RPE_DATA[dateStr];
   const isDone = STATE.completedDays[dateStr];
 
@@ -515,10 +890,11 @@ function openDayModal(dow, dateStr, dayLabel) {
       <div style="text-align:center;padding:24px 0">
         <div style="font-size:46px;margin-bottom:12px">🌙</div>
         <div style="font-family:var(--f-display);font-size:19px;font-weight:600">${dayLabel}</div>
-        <div style="color:var(--text2);margin-top:8px;font-size:13.5px">Día de recuperación</div>
+        <div style="color:var(--text2);margin-top:8px;font-size:13.5px;line-height:1.5">Recuperación activa: rutina diaria de postura + hipopresivos${dow === 3 ? ' y caminata inclinada 25–30 min' : ''}.</div>
       </div>
       <button class="btn btn-secondary btn-full" onclick="closeDayModal()">Cerrar</button>`;
   } else {
+    const cardio = workout.cardio ? cardioFor(week) : null;
     modal.innerHTML = `
       <div class="handle"></div>
       <div style="font-size:10.5px;color:var(--coral);font-weight:700;letter-spacing:1.2px;text-transform:uppercase">${dayLabel} · Semana ${week}</div>
@@ -526,29 +902,29 @@ function openDayModal(dow, dateStr, dayLabel) {
       <div style="font-size:13px;color:var(--text2);margin-bottom:8px">${workout.focus} · ${workout.duration}</div>
       ${isDone ? '<span class="pill pill-sage">✓ Completado</span>' : ''}
       ${rpe ? `<span class="pill" style="background:${getRpeConfig(rpe.rpe).color}22;color:${getRpeConfig(rpe.rpe).color}">Dificultad ${rpe.rpe}/10</span>` : ''}
+      <div style="font-size:12.5px;color:var(--text2);margin-top:10px;line-height:1.5">🔥 Calentamiento: ${workout.warmup.map(w => w.name).slice(0, 4).join(' · ')}…</div>
 
-      <div style="margin:16px 0 8px;font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;font-weight:700">Ejercicios</div>
+      <div style="margin:16px 0 8px;font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;font-weight:700">Ejercicios (carga según tu última sesión)</div>
       ${workout.exercises.map(ex => {
-        const raw = ex.progression ? getSuggestedWeight(ex.progression, week) : null;
-        const w = raw ? Math.round(raw * adj.factor * 2) / 2 : null;
+        const sug = getSuggestion(ex, dateStr, week);
+        const right = ex.bw ? '' : sug.first ? '<span style="font-size:11px;color:var(--text3)">1ª vez</span>' : `<div style="font-family:var(--f-display);font-weight:800;font-size:15px">${fmtNum(dispW(sug.weight, exUnit(ex), sug.exact))}<span style="font-size:10px;font-weight:400;color:var(--text3)"> ${exUnit(ex)}</span></div>`;
         return `
         <div style="background:var(--bg3);border-radius:var(--r-md);padding:13px;margin-bottom:8px;${ex.isGlute ? 'box-shadow:inset 3px 0 0 var(--coral)' : ''}">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
-            <div>
-              <div style="font-weight:600;font-size:13.5px">${ex.isGlute ? '🍑 ' : ''}${ex.name}</div>
-              <div style="font-size:11px;color:var(--text3);margin-top:2px">${ex.equipment}</div>
-            </div>
-            ${w ? `<div style="text-align:right;flex-shrink:0"><div style="font-family:var(--f-display);font-weight:800;font-size:15px">${w}<span style="font-size:10px;font-weight:400;color:var(--text3)"> kg</span></div></div>` : ''}
+            <div><div style="font-weight:600;font-size:13.5px">${ex.isGlute ? '🍑 ' : ''}${ex.name}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">${ex.equipment}</div></div>
+            <div style="text-align:right;flex-shrink:0">${right}</div>
           </div>
           <div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap">
-            <span class="pill pill-gray">${ex.sets}×${ex.reps}</span>
-            ${ex.tempo && ex.tempo !== '—' ? `<span class="pill pill-gray">${ex.tempo}</span>` : ''}
-            ${ex.isWarmup ? '<span class="pill pill-gold">Activación</span>' : ''}
+            <span class="pill pill-gray">${getSetCount(ex, week)}×${ex.reps}</span>
+            <span class="pill pill-gray">⏱ ${ex.rest}</span>
+            ${ex.isCore ? '<span class="pill pill-gold">Core</span>' : ''}
           </div>
         </div>`;
       }).join('')}
-      ${workout.cardio ? `<div style="background:var(--gold-dim);border:1px solid rgba(232,182,76,.3);border-radius:var(--r-md);padding:12px;margin-top:4px"><div style="font-weight:700;color:var(--gold);font-size:13px">🏃 ${workout.cardio.type} ${workout.cardio.duration} min</div><div style="font-size:12px;color:var(--text2);margin-top:2px">${workout.cardio.desc}</div></div>` : ''}
-      <button class="btn btn-secondary btn-full" style="margin-top:14px" onclick="closeDayModal()">Cerrar</button>`;
+      ${cardio ? `<div style="background:var(--gold-dim);border:1px solid rgba(232,182,76,.3);border-radius:var(--r-md);padding:12px;margin-top:4px"><div style="font-weight:700;color:var(--gold);font-size:13px">🏃 ${cardio.type} ${cardio.duration} min</div><div style="font-size:12px;color:var(--text2);margin-top:2px">${cardio.desc}</div></div>` : ''}
+      ${isDone ? `<button class="btn btn-primary btn-full" style="margin-top:14px" onclick="openSummary('${dateStr}')">📊 Ver resumen del día</button>` : ''}
+      <button class="btn btn-secondary btn-full" style="margin-top:10px" onclick="closeDayModal()">Cerrar</button>`;
   }
   document.getElementById('day-overlay').style.display = 'flex';
 }
@@ -650,7 +1026,7 @@ function ciCapturePhoto(pos) {
 }
 
 function ciFinish() {
-  STATE.checkins.push({ ...ciDraft, ts: Date.now() });
+  STATE.checkins.push({ ...ciDraft, planV: PLAN_VERSION, ts: Date.now() });
   try { save('checkins', STATE.checkins); }
   catch(e) {
     // Storage full — drop oldest photos
@@ -663,7 +1039,7 @@ function ciFinish() {
 }
 
 function renderTab(name) {
-  ({today: renderToday, week: renderWeek, progress: renderProgress, profile: renderProfile, face: renderFace})[name]();
+  ({today: renderToday, week: renderWeek, progress: renderProgress, profile: renderProfile})[name]();
 }
 
 // ══════════════════════════════════════════════════════
@@ -705,7 +1081,7 @@ function getExerciseHistory(exId) {
 function renderProgress() {
   const el = document.getElementById('screen-progress');
   const week = STATE.currentWeek;
-  const pct = Math.round(week / 26 * 100);
+  const pct = Math.round(week / TOTAL_WEEKS * 100);
   const totalSessions = Object.values(STATE.completedDays).filter(Boolean).length;
   const streak = getStreak();
 
@@ -718,6 +1094,8 @@ function renderProgress() {
     ['rdl', '🍑 Peso muerto RDL'],
     ['sentadilla-smith', 'Sentadilla'],
     ['prensa-pies-altos', 'Prensa'],
+    ['jalon', 'Jalón al pecho'],
+    ['press-hombro', 'Press de hombro'],
   ];
 
   const checkins = STATE.checkins;
@@ -733,17 +1111,17 @@ function renderProgress() {
   }
 
   el.innerHTML = `
-    <div class="hdr"><h1>Progreso</h1><p>Semana ${week} de 26 · ${pct}% del plan</p></div>
+    <div class="hdr"><h1>Progreso</h1><p>Semana ${week} de ${TOTAL_WEEKS} · ${pct}% del plan</p></div>
 
     <div class="card" style="padding:16px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:9px">
         <span style="font-weight:600;font-size:14px">${getFaseName(week)}</span>
-        <span class="pill pill-coral">S${week}/26</span>
+        <span class="pill pill-coral">S${week}/${TOTAL_WEEKS}</span>
       </div>
       <div style="height:7px;background:var(--bg4);border-radius:4px;overflow:hidden;margin-bottom:7px">
         <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,var(--coral),var(--gold));border-radius:4px"></div>
       </div>
-      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3)"><span>F1</span><span>F2</span><span>F3</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3)"><span>Base</span><span>Construcción</span><span>Definición</span></div>
     </div>
 
     <div class="streak-row" style="padding-top:0">
@@ -756,12 +1134,12 @@ function renderProgress() {
     <div class="checkin-banner" onclick="openCheckin()">
       <div class="ci-icon">📸</div>
       <div style="flex:1">
-        <div style="font-weight:700;font-size:14px;color:var(--gold)">Check-in mensual pendiente</div>
+        <div style="font-weight:700;font-size:14px;color:var(--gold)">Check-in pendiente</div>
         <div style="font-size:12px;color:var(--text2)">Peso, medidas y fotos</div>
       </div><div style="color:var(--gold)">→</div>
     </div>` : ''}
 
-    <div class="sect">Levantamientos clave — datos reales</div>
+    <div class="sect">Levantamientos clave — datos reales (en kg)</div>
     ${keyLifts.map(([id, name]) => {
       const hist = getExerciseHistory(id);
       const last = hist[hist.length - 1];
@@ -794,6 +1172,12 @@ function renderProgress() {
       <div class="chart-head"><span class="chart-title">🍑 Evolución glúteo</span>
         <span class="chart-val">${lastCi.gluteo || '—'} cm</span></div>
       ${sparkline(checkins.filter(c => c.gluteo).map(c => c.gluteo), '#e8b64c')}
+    </div>` : ''}
+    ${checkins.length >= 2 ? `
+    <div class="chart-card">
+      <div class="chart-head"><span class="chart-title">📏 Evolución cintura</span>
+        <span class="chart-val">${lastCi.cintura || '—'} cm</span></div>
+      ${sparkline(checkins.filter(c => c.cintura).map(c => c.cintura), '#8fc79a')}
     </div>` : ''}
     ` : `
     <div class="card" style="text-align:center;padding:24px 18px">
@@ -873,9 +1257,23 @@ function renderProfile() {
       <button class="btn btn-secondary btn-full" onclick="downloadCalendarEvent()">📅 Descargar evento (.ics)</button>
     </div>
 
+    <div class="sect">Cronómetro de descanso</div>
+    <div class="card">
+      <div style="font-weight:600;margin-bottom:4px">🔔 Alarma aunque salgas de la app</div>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:11px;line-height:1.5">Al terminar el descanso suena una alarma aunque cambies de app o bloquees el iPhone. Mientras dura el descanso se pausará tu música. El iPhone no permite vibración desde apps web: usa el sonido (sube el volumen).</div>
+      <button class="btn ${STATE.restAlarm ? 'btn-secondary' : 'btn-primary'} btn-sm" onclick="toggleRestAlarm()">${STATE.restAlarm ? '✓ Alarma de sonido activa' : 'Activar alarma de sonido'}</button>
+    </div>
+
+    <div class="sect">Alimentación base (orientativa)</div>
+    <div class="card">
+      ${[['Calorías', '≈ 2,000–2,100 kcal/día (déficit pequeño)'], ['Proteína', '110–120 g/día (repartida en 3–4 comidas)'], ['Pasos', '8,000–10,000/día'], ['Agua', '2–2.5 L/día'], ['Sueño', '7–8 h'] ]
+        .map(([l, v]) => `<div class="p-row"><span class="p-label">${l}</span><span class="p-value" style="text-align:right">${v}</span></div>`).join('')}
+      <div style="font-size:11.5px;color:var(--text3);line-height:1.5;margin-top:8px">Es una estimación, no una prescripción. Meta: bajar ~0.25–0.4 kg por semana sin perder fuerza. Si en 3 semanas la cintura no baja, quita ~150 kcal; si pierdes fuerza o rindes mal, súmalas. Una nutricionista puede personalizarlo.</div>
+    </div>
+
     <div class="sect">Mi plan</div>
     <div class="card">
-      ${[['Semana', `${week} de 26`], ['Fase', getFaseName(week)],
+      ${[['Semana', `${week} de ${TOTAL_WEEKS}`], ['Fase', getFaseName(week)],
          ['Inicio', STATE.planStartDate ? getMonthDay(STATE.planStartDate) : '—'],
          ['Check-ins hechos', STATE.checkins.length],
          ['Ciclo', adj.label], ['Viaje', STATE.travelMode ? '✈️ Pausado' : 'Activo']]
@@ -883,6 +1281,13 @@ function renderProfile() {
     </div>
     <div style="height:16px"></div>
   `;
+}
+
+function toggleRestAlarm() {
+  STATE.restAlarm = !STATE.restAlarm;
+  save('restAlarm', STATE.restAlarm ? 'on' : 'off');
+  showToast(STATE.restAlarm ? '🔔 Alarma de descanso activada' : 'Alarma desactivada');
+  renderProfile();
 }
 
 function setCyclePhase(phase) {
@@ -957,7 +1362,7 @@ function downloadCalendarEvent() {
   const [h, m] = STATE.notifTime.split(':').map(Number);
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m);
-  const end = new Date(start.getTime() + 70 * 60000);
+  const end = new Date(start.getTime() + 90 * 60000);
   const pad = n => String(n).padStart(2, '0');
   const fmt = d => `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`;
   const ics = ['BEGIN:VCALENDAR','VERSION:2.0','BEGIN:VEVENT',`DTSTART:${fmt(start)}`,`DTEND:${fmt(end)}`,
@@ -975,14 +1380,27 @@ function finishOnboarding() {
   const val = document.getElementById('startDateInput').value || today();
   STATE.planStartDate = val;
   save('planStartDate', val);
+  save('planVersion', PLAN_VERSION);
   STATE.currentWeek = computeWeek();
   document.getElementById('onboarding').style.display = 'none';
   renderToday();
   showToast(`🚀 Semana ${STATE.currentWeek} — ¡vamos!`);
 }
 
+function migratePlan() {
+  if (localStorage.getItem('planVersion') === PLAN_VERSION) return;
+  // Plan nuevo: conserva historial de cargas (sirve para sugerir pesos), limpia series sin hacer y reinicia fechas
+  Object.keys(STATE.setLogs).forEach(k => { if (!STATE.setLogs[k].some(s => s.done)) delete STATE.setLogs[k]; });
+  save('setLogs', STATE.setLogs);
+  STATE.planStartDate = null;
+  localStorage.removeItem('planStartDate');
+  STATE.travelMode = false; save('travelMode', 'false');
+  STATE.pausedWeek = 1; save('pausedWeek', '1');
+}
+
 function init() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  migratePlan();
   if (!STATE.planStartDate) {
     const ob = document.getElementById('onboarding');
     ob.style.display = 'flex';
@@ -994,169 +1412,3 @@ function init() {
   }
 }
 init();
-
-// ══════════════════════════════════════════════════════
-// SCREEN: YOGA FACIAL
-// ══════════════════════════════════════════════════════
-const FACE_LOG = JSON.parse(localStorage.getItem('faceLog') || '{}'); // { dateStr: { exId: true, ... } }
-const FACE_METRICS = JSON.parse(localStorage.getItem('faceMetrics') || '{}'); // { dateStr: { headache: bool, tension: 1-10 } }
-
-function getFaceDailyQuote() {
-  const seed = parseInt(today().replace(/-/g,''));
-  return FACE_QUOTES[seed % FACE_QUOTES.length];
-}
-
-function getFaceStreak() {
-  let streak = 0;
-  const d = new Date();
-  for (let i = 0; i < 60; i++) {
-    const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    const log = FACE_LOG[ds];
-    const didAny = log && Object.values(log).some(Boolean);
-    if (didAny) streak++;
-    else if (ds !== today()) break;
-    d.setDate(d.getDate() - 1);
-  }
-  return streak;
-}
-
-function toggleFaceExercise(exId) {
-  const ds = today();
-  if (!FACE_LOG[ds]) FACE_LOG[ds] = {};
-  FACE_LOG[ds][exId] = !FACE_LOG[ds][exId];
-  save('faceLog', FACE_LOG);
-  renderFace();
-  if (FACE_LOG[ds][exId] && navigator.vibrate) navigator.vibrate(25);
-}
-
-function logFaceMetric(field, val) {
-  const ds = today();
-  if (!FACE_METRICS[ds]) FACE_METRICS[ds] = {};
-  FACE_METRICS[ds][field] = val;
-  save('faceMetrics', FACE_METRICS);
-  renderFace();
-}
-
-function getFaceWeekSummary() {
-  const days = [];
-  const d = new Date();
-  for (let i = 0; i < 7; i++) {
-    const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    days.push(ds);
-    d.setDate(d.getDate() - 1);
-  }
-  const headaches = days.filter(ds => FACE_METRICS[ds]?.headache).length;
-  const tensions = days.map(ds => FACE_METRICS[ds]?.tension).filter(t => t != null);
-  const avgTension = tensions.length ? (tensions.reduce((a,b) => a+b, 0) / tensions.length).toFixed(1) : null;
-  const doneDays = days.filter(ds => FACE_LOG[ds] && Object.values(FACE_LOG[ds]).some(Boolean)).length;
-  return { headaches, avgTension, doneDays };
-}
-
-
-function getFaceWeekSummary() {
-  const days = [];
-  const d = new Date();
-  for (let i = 0; i < 7; i++) {
-    const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    days.push(ds);
-    d.setDate(d.getDate() - 1);
-  }
-  const headaches = days.filter(ds => FACE_METRICS[ds]?.headache).length;
-  const tensions = days.map(ds => FACE_METRICS[ds]?.tension).filter(t => t != null);
-  const avgTension = tensions.length ? (tensions.reduce((a,b) => a+b, 0) / tensions.length).toFixed(1) : null;
-  const doneDays = days.filter(ds => FACE_LOG[ds] && Object.values(FACE_LOG[ds]).some(Boolean)).length;
-  return { headaches, avgTension, doneDays };
-}
-
-function renderFace() {
-  const el = document.getElementById('screen-face');
-  const ds = today();
-  const dow = todayDow();
-  const todayLog = FACE_LOG[ds] || {};
-  const streak = getFaceStreak();
-  const todayMetric = FACE_METRICS[ds] || {};
-  const summary = getFaceWeekSummary();
-  const dayBlock = FACE_WEEK_MAP[dow];
-  const dayNames = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
-
-  let totalEx = FACE_DAILY_BRUXISMO.exercises.length + (dayBlock.exercises?.length || 0);
-  let doneEx = 0;
-  FACE_DAILY_BRUXISMO.exercises.forEach(e => { if (todayLog[e.id]) doneEx++; });
-  (dayBlock.exercises || []).forEach(e => { if (todayLog[e.id]) doneEx++; });
-
-  el.innerHTML = `
-    <div class="hero">
-      <div class="hero-week" style="color:var(--rose)">${dayNames[dow].toUpperCase()} · YOGA FACIAL</div>
-      <div class="hero-title">🌿 ${dayBlock.isRest ? 'Descanso de definición' : dayBlock.title}</div>
-      <div class="hero-sub">${dayBlock.subtitle}</div>
-    </div>
-
-    <div class="streak-row">
-      <div class="streak-chip ${streak >= 3 ? 'fire' : ''}"><strong>${streak >= 3 ? '🔥' : ''}${streak}</strong><small>Racha</small></div>
-      <div class="streak-chip"><strong>${doneEx}/${totalEx}</strong><small>Hoy</small></div>
-      <div class="streak-chip"><strong>${summary.doneDays}/7</strong><small>Semana</small></div>
-    </div>
-
-    <div class="quote-card"><div class="quote-text">${getFaceDailyQuote()}</div></div>
-
-    <div class="sect">Check-in diario</div>
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <span style="font-weight:600;font-size:13.5px">¿Dolor de cabeza hoy?</span>
-        <div style="display:flex;gap:6px">
-          <button class="btn ${todayMetric.headache === true ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="logFaceMetric('headache', true)">Sí</button>
-          <button class="btn ${todayMetric.headache === false ? 'btn-secondary' : 'btn-ghost'} btn-sm" onclick="logFaceMetric('headache', false)">No</button>
-        </div>
-      </div>
-      <div style="font-weight:600;font-size:13.5px;margin-bottom:8px">Tensión mandibular al despertar</div>
-      <div style="display:flex;gap:5px">
-        ${[1,2,3,4,5,6,7,8,9,10].map(n => `
-          <button onclick="logFaceMetric('tension',${n})" style="flex:1;aspect-ratio:1;border-radius:8px;border:1.5px solid ${todayMetric.tension === n ? 'var(--rose)' : 'var(--border)'};background:${todayMetric.tension === n ? 'var(--rose-dim)' : 'var(--bg4)'};color:${todayMetric.tension === n ? 'var(--rose)' : 'var(--text2)'};font-size:11px;font-weight:700;cursor:pointer">${n}</button>
-        `).join('')}
-      </div>
-    </div>
-
-    ${summary.headaches > 0 || summary.avgTension ? `
-    <div style="margin:0 16px 12px;background:var(--sky-dim);border:1px solid rgba(125,184,232,.3);border-radius:var(--r-md);padding:12px 15px;font-size:12.5px;color:var(--text2)">
-      📊 Esta semana: ${summary.headaches} día(s) con dolor de cabeza${summary.avgTension ? ` · tensión promedio ${summary.avgTension}/10` : ''}
-    </div>` : ''}
-
-    ${dayBlock.isRest ? `
-    <div class="sect" style="color:${dayBlock.color}">Hoy toca descansar el cuello</div>
-    <div class="card" style="text-align:center;padding:22px 18px">
-      <div style="font-size:32px;margin-bottom:8px">🌙</div>
-      <div style="font-size:13px;color:var(--text2)">La intensidad de ayer necesita recuperación. El bloque de bruxismo de abajo sigue siendo obligatorio hoy.</div>
-    </div>` : `
-    <div class="sect" style="color:${dayBlock.color}">${dayBlock.title}</div>
-    ${dayBlock.exercises.map(ex => renderFaceExercise(ex, dayBlock.color, todayLog)).join('')}
-    `}
-
-    <div class="sect" style="color:${FACE_DAILY_BRUXISMO.color}">${FACE_DAILY_BRUXISMO.title}</div>
-    <div style="padding:0 20px 8px;font-size:11.5px;color:var(--text3)">${FACE_DAILY_BRUXISMO.subtitle}</div>
-    ${FACE_DAILY_BRUXISMO.exercises.map(ex => renderFaceExercise(ex, FACE_DAILY_BRUXISMO.color, todayLog)).join('')}
-
-    <div style="height:16px"></div>
-  `;
-}
-
-function renderFaceExercise(ex, color, todayLog) {
-  const done = todayLog[ex.id];
-  return `
-  <div class="exc ${done ? 'done' : ''}" style="${!done ? `box-shadow:inset 3px 0 0 ${color}44` : ''}">
-    <div class="exc-head" onclick="toggleFaceExercise('${ex.id}')" style="cursor:pointer">
-      <div class="exc-num" style="${done ? 'background:var(--sage-dim);color:var(--sage)' : ''}">${done ? '✓' : '○'}</div>
-      <div class="exc-info">
-        <div class="exc-name">${ex.name}</div>
-        <div class="exc-meta">
-          ${ex.sets !== '—' ? `<span class="pill pill-gray">${ex.sets}${ex.reps ? '×'+ex.reps : ''}</span>` : ''}
-          ${ex.hold && ex.hold !== '—' ? `<span class="pill pill-gray">⏱ ${ex.hold}</span>` : ''}
-        </div>
-        <div style="font-size:12px;color:var(--text2);margin-top:8px;line-height:1.5">${ex.notes}</div>
-        ${ex.videoId && FACE_VIDEOS[ex.videoId] ? `
-        <a href="https://www.youtube.com/watch?v=${FACE_VIDEOS[ex.videoId]}" target="_blank" rel="noopener" class="photo-btn" style="color:#ff6b5e;border-color:rgba(255,90,69,.3);text-decoration:none;margin-top:8px" onclick="event.stopPropagation()">
-          ▶ Ver video del ejercicio
-        </a>` : ''}
-      </div>
-    </div>
-  </div>`;
-}

@@ -343,42 +343,20 @@ function handleRemoveExerciseConfirm(name) {
 }
 
 function handleWeight() {
-  const week = STATE.currentWeek;
-  const dow = todayDow();
+  const week = STATE.currentWeek, dow = todayDow();
   const workout = DAY_WORKOUT_MAP[dow];
   if (!workout) return { text: 'Hoy es descanso. Los pesos los ves en los días de entrenamiento.', chips: ['Cerrar'] };
-
-  const weights = workout.exercises
-    .filter(e => e.progression)
-    .map(e => {
-      const w = getSuggestedWeight(e.progression, week);
-      return `• ${e.name}: **${w} kg**`;
-    }).join('\n');
-
-  return {
-    text: `Pesos sugeridos para hoy (semana ${week}):\n\n${weights}\n\n¿Quieres ajustar alguno?`,
-    chips: ['Reducir todos 10%','Aumentar todos 5%','Ver en la rutina','Cerrar'],
-    action: 'weight_adj',
-  };
+  const lines = workout.exercises.filter(e => !e.bw).map(e => {
+    const s = getSuggestion(e, today(), week);
+    return `• ${e.name}: ${s.first ? '**primera vez** (elige tu peso de partida)' : `**${fmtW(s.weight, exUnit(e), s.exact)} × ${s.reps}**`}`;
+  }).join('\n');
+  return { text: `Cargas sugeridas hoy (según lo último que levantaste):\n\n${lines}\n\n¿Quieres ajustar?`, chips: ['Reducir todos 10%','Ver en la rutina','Cerrar'], action: 'weight_adj' };
 }
 
 function handleWeightAdj(choice) {
-  const week = STATE.currentWeek;
-  const dow = todayDow();
-  const workout = DAY_WORKOUT_MAP[dow];
-  if (!workout) return { text: 'No hay sesión hoy.', chips: ['Cerrar'] };
-
-  const factor = choice.includes('Reducir') ? 0.9 : choice.includes('Aumentar') ? 1.05 : 1;
-  if (factor !== 1) {
-    workout.exercises.forEach(ex => {
-      if (ex.progression) {
-        const current = getSuggestedWeight(ex.progression, week);
-        if (current) setWeight(ex.id, week, Math.round(current * factor * 2) / 2);
-      }
-    });
-    return { text: `✅ Pesos ajustados ${factor < 1 ? '-10%' : '+5%'} para hoy. Puedes verlos en tu rutina.`, chips: ['Ver rutina','Cerrar'] };
-  }
-  return { text: 'Puedes editar el peso de cada ejercicio directamente en la rutina tocando el campo de peso.', chips: ['Ver rutina','Cerrar'] };
+  if (choice.includes('Reducir')) { applyDayFactor(0.9); return { text: '✅ Bajé las cargas de hoy un 10%.', chips: ['Ver rutina','Cerrar'] }; }
+  if (choice.includes('Aumentar')) { applyDayFactor(1.05); return { text: '✅ Subí las cargas de hoy un 5%.', chips: ['Ver rutina','Cerrar'] }; }
+  return { text: 'Puedes editar el peso de cada serie directamente en la rutina (y cambiar entre kg y lb).', chips: ['Ver rutina','Cerrar'] };
 }
 
 function handleCycle() {
@@ -407,7 +385,7 @@ function handleProgress() {
   const totalSessions = Object.values(STATE.completedDays).filter(Boolean).length;
   const adj = getCycleAdj();
   return {
-    text: `📊 Tu progreso actual:\n\n• Semana **${week} de 26** (${Math.round(week/26*100)}%)\n• Fase: **${getFaseName(week)}**\n• Sesiones completadas: **${totalSessions}**\n• Ciclo actual: **${adj.label}** (${Math.round(adj.factor*100)}%)\n\n${week <= 8 ? '¡Estás construyendo la base! Cada sesión cuenta.' : week <= 17 ? '¡Ya estás en hipertrofia real! El cuerpo está cambiando.' : '¡Fase avanzada! Estás entre las que más llegan. Orgullo.'} 💪`,
+    text: `📊 Tu progreso actual:\n\n• Semana **${week} de ${TOTAL_WEEKS}** (${Math.round(week/TOTAL_WEEKS*100)}%)\n• Fase: **${getFaseName(week)}**\n• Sesiones completadas: **${totalSessions}**\n• Ciclo actual: **${adj.label}** (${Math.round(adj.factor*100)}%)\n\n${week <= 4 ? '¡Construyendo base y postura! Cada sesión cuenta.' : week <= 8 ? '¡Fase de construcción! El cuerpo empieza a cambiar.' : '¡Fase de definición! Estás en la recta final. Orgullo.'} 💪`,
     chips: ['Ver métricas','Cerrar'],
   };
 }
@@ -573,3 +551,31 @@ function sendChip(text) {
     if (STATE.currentTab === 'today') renderToday();
   }, 400 + Math.random() * 300);
 }
+
+
+// ═══════════════════════════════════════════════════════
+// v9 — compatibilidad con sobrecarga por última carga
+// ═══════════════════════════════════════════════════════
+function applyDayFactor(f) {
+  const d = today();
+  STATE.dayFactor[d] = (STATE.dayFactor[d] || 1) * f;
+  save('dayFactor', STATE.dayFactor);
+  const w = DAY_WORKOUT_MAP[todayDow()];
+  if (w) w.exercises.forEach(ex => {
+    const k = getSetLogKey(d, ex.id);
+    if (STATE.setLogs[k] && !STATE.setLogs[k].some(s => s.done)) delete STATE.setLogs[k];
+  });
+  save('setLogs', STATE.setLogs);
+  if (STATE.currentTab === 'today') renderToday();
+}
+
+const _origTiredChoice = handleTiredChoice;
+handleTiredChoice = function (choice) {
+  if (choice.includes('Reducir carga hoy')) {
+    applyDayFactor(0.9);
+    return { text: `Listo ✅ Bajé las cargas sugeridas de hoy un 10%. Mañana vuelve la progresión normal, calculada desde lo último que levantaste.\n\n¡Lo importante es que te muevas! 💪`, chips: ['Ver rutina de hoy','Cerrar'] };
+  }
+  return _origTiredChoice(choice);
+};
+
+
