@@ -519,12 +519,12 @@ function renderToday() {
     ${dailyBlockHtml(dateStr, week)}
     ${painRuleHtml()}
 
-    <div class="sect">1 · Calentamiento (≈10 min)</div>
-    ${collapsible('warm', 'Prepara rodillas, caderas y hombros', workout.tip, `${countChecks(workout.warmup, dateStr)}/${workout.warmup.length}`,
+    <div class="sect">1 · Calentamiento (≈6 min)</div>
+    ${collapsible('warm', 'Prepara rodillas, caderas y hombros', 'Después, en el primer ejercicio, haz 2 series de aproximación (50% y 75% del peso).', `${countChecks(workout.warmup, dateStr)}/${workout.warmup.length}`,
       renderChecklist(workout.warmup, dateStr, week, true), !isDone)}
 
     <div class="sect">2 · Fuerza — registra cada serie</div>
-    <div style="margin:0 20px 10px;font-size:12px;color:var(--text2);line-height:1.5">Meta de esfuerzo: básicos ${rirFor(week)} · aislamiento ${rirFor(week, { iso: true })}. La app te propone la carga según <b>lo último que levantaste</b>.</div>
+    <div style="margin:0 20px 10px;font-size:12px;color:var(--text2);line-height:1.5">Meta de esfuerzo: básicos ${rirFor(week)} · aislamiento ${rirFor(week, { iso: true })}. La app te propone la carga según <b>lo último que levantaste</b>.<br>Las <b>superseries</b> (A1 + A2) se hacen alternando: serie de A1, 15 s, serie de A2, descanso, y repites.</div>
     ${main.map(ex => renderExerciseCard(ex, idx++, week, dateStr)).join('')}
 
     <div class="sect">3 · Core y cintura</div>
@@ -564,6 +564,15 @@ function renderExerciseCard(ex, index, week, dateStr) {
   const unit = ex.unit === 'seg' ? 'seg' : 'reps';
   const WU = exUnit(ex, dateStr);
   const last = getPastSessions(ex, dateStr)[0];
+  let ssPill = '', ssNote = '';
+  if (ex.ss) {
+    const wk = DAY_WORKOUT_MAP[new Date(dateStr + 'T12:00:00').getDay()];
+    const partner = wk && wk.exercises.find(o => o.ss && o.ss[0] === ex.ss[0] && o.id !== ex.id);
+    ssPill = `<span class="pill pill-coral">Superserie ${ex.ss}</span>`;
+    if (partner) ssNote = ex.ss[1] === '1'
+      ? `<div style="font-size:12px;color:var(--coral);padding:2px 0 6px">🔁 Tras cada serie, descansa 15 s y haz una serie de <b>${partner.name}</b>.</div>`
+      : `<div style="font-size:12px;color:var(--coral);padding:2px 0 6px">🔁 Va alternada con <b>${partner.name}</b>. Después de esta serie, descansa ${ex.rest}.</div>`;
+  }
   const lastTop = last ? (ex.bw ? { reps: Math.max(...last.sets.map(s => s.reps)) } : last.sets.reduce((a, b) => (b.weight > a.weight || (b.weight === a.weight && b.reps > a.reps)) ? b : a)) : null;
 
   let tag;
@@ -583,6 +592,7 @@ function renderExerciseCard(ex, index, week, dateStr) {
         <div class="exc-name">${ex.isGlute ? '🍑 ' : ''}${ex.name}</div>
         <div class="exc-equip">${ex.equipment}</div>
         <div class="exc-meta">
+          ${ssPill}
           <span class="pill pill-gray">${nSets}×${ex.reps}</span>
           ${ex.tempo && ex.tempo !== '—' ? `<span class="pill pill-gray">tempo ${ex.tempo}</span>` : ''}
           <span class="pill pill-gray">⏱ ${ex.rest}</span>
@@ -594,7 +604,7 @@ function renderExerciseCard(ex, index, week, dateStr) {
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text3);flex-shrink:0;transform:rotate(${open ? 180 : 0}deg);transition:.2s;margin-top:4px"><polyline points="6 9 12 15 18 9"/></svg>
     </div>
     <div class="exc-body" style="display:${open ? 'block' : 'none'}">
-      ${tag}
+      ${ssNote}${tag}
       <div class="sets-wrap">
         <div class="sets-title" style="display:flex;justify-content:space-between;align-items:center">
           <span>Registro de series</span>
@@ -918,6 +928,7 @@ function openDayModal(dow, dateStr, dayLabel) {
           <div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap">
             <span class="pill pill-gray">${getSetCount(ex, week)}×${ex.reps}</span>
             <span class="pill pill-gray">⏱ ${ex.rest}</span>
+            ${ex.ss ? `<span class="pill pill-coral">Superserie ${ex.ss}</span>` : ''}
             ${ex.isCore ? '<span class="pill pill-gold">Core</span>' : ''}
           </div>
         </div>`;
